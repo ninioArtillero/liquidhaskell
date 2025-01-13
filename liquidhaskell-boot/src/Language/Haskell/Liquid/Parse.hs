@@ -889,7 +889,7 @@ data BPspec
   | Alias   (Located (RTAlias Symbol BareTypeParsed))     -- ^ 'type' alias declaration
   | EAlias  (Located (RTAlias Symbol (ExprV LocSymbol)))  -- ^ 'predicate' alias declaration
   | Embed   (Located LHName, FTycon, TCArgs)              -- ^ 'embed' declaration
-  | Qualif  (QualifierV LocSymbol)                        -- ^ 'qualif' definition
+  | Qualif  (LHQualifier LocSymbol)                       -- ^ 'qualif' definition
   | LVars   (Located LHName)                              -- ^ 'lazyvar' annotation, defer checks to *use* sites
   | Lazy    (Located LHName)                              -- ^ 'lazy' annotation, skip termination check on binder
   | Fail    (Located LHName)                              -- ^ 'fail' annotation, the binder should be unsafe
@@ -1162,7 +1162,7 @@ specP
     <|> fallbackSpecP "expression"  (fmap EAlias ealiasP   )
 
     <|> fallbackSpecP "embed"       (fmap Embed  embedP    )
-    <|> fallbackSpecP "qualif"      (fmap Qualif (qualifierP sortP))
+    <|> fallbackSpecP "qualif"      (fmap Qualif lhQualifierP)
     <|> (reserved "lazyvar"       >> fmap LVars  locBinderThisModuleLHNameP)
 
     <|> (reserved "lazy"          >> fmap Lazy   locBinderLHNameP)
@@ -1192,6 +1192,33 @@ tyBindsRemP sy = do
   reservedOp "::"
   tb <- termBareTypeP
   return ([sy],tb)
+
+-- | Qualifiers
+lhQualifierP :: Parser (LHQualifier LocSymbol)
+lhQualifierP = do
+  pos    <- getSourcePos
+  n      <- upperIdP
+  params <- parens $ sepBy1 lhQualParamP comma
+  _      <- colon
+  body   <- predP
+  return LHQ
+    { lhqName = n
+    , lhqParams = params
+    , lhqBody = body
+    , lhqPos = pos
+    }
+
+lhQualParamP :: Parser (LHQualParam LocSymbol)
+lhQualParamP = do
+  x   <- symbolP
+  pat <- qualPatP
+  _   <- colon
+  t <- bareTypeP
+  return LHQP
+    { lhqpSym = x
+    , lhqpPat = pat
+    , lhqpSort = t
+    }
 
 pragmaP :: Parser (Located String)
 pragmaP = locStringLiteral

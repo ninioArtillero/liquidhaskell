@@ -492,7 +492,7 @@ makeSpecQual _cfg env tycEnv measEnv _rtEnv specs = SpQual
 
 makeQualifiers :: Bare.Env -> Bare.TycEnv -> (ModName, Ms.Spec F.Symbol ty) -> [F.Qualifier]
 makeQualifiers env tycEnv (modn, spec) =
-    Mb.mapMaybe (resolveQParams env tycEnv modn) $ Ms.qualifiers spec
+    map (resolveQParams env tycEnv modn) $ Ms.qualifiers spec
 
 
 -- | @resolveQualParams@ converts the sorts of parameters from, e.g.
@@ -501,28 +501,19 @@ makeQualifiers env tycEnv (modn, spec) =
 --   It would not be required if _all_ qualifiers are scraped from
 --   function specs, but we're keeping it around for backwards compatibility.
 
-resolveQParams :: Bare.Env -> Bare.TycEnv -> ModName -> F.Qualifier -> Maybe F.Qualifier
-resolveQParams env tycEnv name q = do
-     qps   <- mapM goQP (F.qParams q)
-     return $ q { F.qParams = qps }
+resolveQParams :: Bare.Env -> Bare.TycEnv -> ModName -> LHQualifier F.Symbol -> F.Qualifier
+resolveQParams env tycEnv name q = F.Q
+    { F.qName = lhqName q
+    , F.qParams = map goQP (lhqParams q)
+    , F.qBody = lhqBody q
+    , F.qPos = lhqPos q
+    }
   where
-    goQP qp          = do { s <- go (F.qpSort qp) ; return qp { F.qpSort = s } }
-    go               :: F.Sort -> Maybe F.Sort
-    go (FAbs i s)    = FAbs i <$> go s
-    go (FFunc s1 s2) = FFunc  <$> go s1 <*> go s2
-    go (FApp  s1 s2) = FApp   <$> go s1 <*> go s2
-    go (FTC c)       = qualifyFTycon env tycEnv name c
-    go s             = Just s
-
-qualifyFTycon :: Bare.Env -> Bare.TycEnv -> ModName -> F.FTycon -> Maybe F.Sort
-qualifyFTycon env tycEnv name c
-  | isPrimFTC           = Just (FTC c)
-  | otherwise           = tyConSort embs . F.atLoc tcs <$> ty
-  where
-    ty                  = Bare.maybeResolveSym env name "qualify-FTycon" tcs
-    isPrimFTC           = F.val tcs `elem` F.prims
-    tcs                 = F.fTyconSymbol c
-    embs                = Bare.tcEmbs tycEnv
+    goQP qp = F.QP
+      { F.qpSym = lhqpSym qp
+      , F.qpPat = lhqpPat qp
+      , F.qpSort = rTypeSort (Bare.tcEmbs tycEnv) (Bare.ofBareType env (lhqPos q) Nothing $ lhqpSort qp)
+      }
 
 tyConSort :: F.TCEmb Ghc.TyCon -> F.Located Ghc.TyCon -> F.Sort
 tyConSort embs lc = Mb.maybe s0 fst (F.tceLookup c embs)

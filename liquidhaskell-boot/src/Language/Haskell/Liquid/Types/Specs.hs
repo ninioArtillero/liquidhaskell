@@ -44,6 +44,8 @@ module Language.Haskell.Liquid.Types.Specs (
   -- * Other types
   , QImports(..)
   , Spec(..)
+  , LHQualifier(..)
+  , LHQualParam(..)
   , GhcSpecVars(..)
   , GhcSpecSig(..)
   , GhcSpecNames(..)
@@ -443,14 +445,16 @@ data LHQualifier v = LHQ
   , lhqBody   :: !(F.ExprV v)  -- ^ Predicate
   , lhqPos    :: !F.SourcePos  -- ^ Source Location
   }
-  deriving (Data, Generic, Functor)
+  deriving (Eq, Data, Generic, Functor)
+  deriving (Binary, Hashable) via Generically (LHQualifier v)
 
 data LHQualParam v = LHQP
   { lhqpSym  :: !F.Symbol
   , lhqpPat  :: !F.QualPattern
   , lhqpSort :: !(BareTypeV v)
   }
-  deriving (Data, Generic)
+  deriving (Eq, Data, Generic)
+  deriving (Binary, Hashable) via Generically (LHQualParam v)
 
 instance Functor LHQualParam where
   fmap f qp = qp { lhqpSort = mapBareTypeV f (lhqpSort qp) }
@@ -469,6 +473,9 @@ instance Show (LHQualifier F.Symbol) where
     showString ", lhqBody = " . shows (lhqBody qp) .
     showString ", lhqPos = " . shows (lhqPos qp) .
     showString "}"
+
+instance (Show lname, F.PPrint lname) => F.PPrint (LHQualifier lname) where
+  pprintTidy k q = text "qualif" <+> pprintTidy k (lhqName q) <+> text "defined at" <+> pprintTidy k (lhqPos q)
 
 -- | A function to resolve names in the ty parameter of Spec
 --
@@ -778,7 +785,7 @@ data LiftedSpec = LiftedSpec
     -- ^ Expression aliases
   , liftedEmbeds     :: F.TCEmb (F.Located LHName)
     -- ^ GHC-Tycon-to-fixpoint Tycon map
-  , liftedQualifiers :: HashSet (F.QualifierV LHName)
+  , liftedQualifiers :: HashSet (LHQualifier LHName)
     -- ^ Qualifiers in source/spec files
   , liftedLvars      :: HashSet (F.Located LHName)
     -- ^ Variables that should be checked in the environment they are used
