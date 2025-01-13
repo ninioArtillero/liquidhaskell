@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DerivingVia                #-}
 {-# LANGUAGE NamedFieldPuns             #-}
 {-# LANGUAGE StandaloneDeriving         #-}
@@ -393,7 +394,7 @@ data Spec lname ty = Spec
   , aliases    :: ![F.Located (RTAlias F.Symbol (BareTypeV lname))]   -- ^ RefType aliases
   , ealiases   :: ![F.Located (RTAlias F.Symbol (F.ExprV lname))]     -- ^ Expression aliases
   , embeds     :: !(F.TCEmb (F.Located LHName))                       -- ^ GHC-Tycon-to-fixpoint Tycon map
-  , qualifiers :: ![F.QualifierV lname]                               -- ^ Qualifiers in source files
+  , qualifiers :: ![LHQualifier lname]                               -- ^ Qualifiers in source files
   , lvars      :: !(S.HashSet (F.Located LHName))                     -- ^ Variables that should be checked in the environment they are used
   , lazy       :: !(S.HashSet (F.Located LHName))                     -- ^ Ignore Termination Check in these Functions
   , rewrites    :: !(S.HashSet (F.Located LHName))                    -- ^ Theorems turned into rewrite rules
@@ -434,6 +435,41 @@ instance (Show lname, F.PPrint lname, Show ty, F.PPrint ty, F.PPrint (RTypeV lna
 
 deriving instance Show BareSpec
 
+-- | Qualifiers in the context of LH are almost the same as in
+-- LF, except that sorts can refer to Haskell types.
+data LHQualifier v = LHQ
+  { lhqName   :: !F.Symbol     -- ^ Name
+  , lhqParams :: [LHQualParam v] -- ^ Parameters
+  , lhqBody   :: !(F.ExprV v)  -- ^ Predicate
+  , lhqPos    :: !F.SourcePos  -- ^ Source Location
+  }
+  deriving (Data, Generic, Functor)
+
+data LHQualParam v = LHQP
+  { lhqpSym  :: !F.Symbol
+  , lhqpPat  :: !F.QualPattern
+  , lhqpSort :: !(BareTypeV v)
+  }
+  deriving (Data, Generic)
+
+instance Functor LHQualParam where
+  fmap f qp = qp { lhqpSort = mapBareTypeV f (lhqpSort qp) }
+
+instance Show (LHQualParam F.Symbol) where
+  showsPrec _ qp =
+    showString "LHQP {lhqpSym = " . shows (lhqpSym qp) .
+    showString ", lhqpPat = " . shows (lhqpPat qp) .
+    showString ", lhqpSort = " . shows (lhqpSort qp) .
+    showString "}"
+
+instance Show (LHQualifier F.Symbol) where
+  showsPrec _ qp =
+    showString "LHQ {lhqName " . shows (lhqName qp) .
+    showString ", lhqParams = " . shows (lhqParams qp) .
+    showString ", lhqBody = " . shows (lhqBody qp) .
+    showString ", lhqPos = " . shows (lhqPos qp) .
+    showString "}"
+
 -- | A function to resolve names in the ty parameter of Spec
 --
 --
@@ -464,7 +500,7 @@ emapSpecM bscp lenv vf f sp = do
     newtyDecls <- mapM (emapDataDeclM bscp vf f) (newtyDecls sp)
     aliases <- mapM (traverse (emapRTAlias (emapBareTypeVM bscp vf))) (aliases sp)
     ealiases <- mapM (traverse (emapRTAlias (\e -> emapExprVM (vf . (++ e))))) $ ealiases sp
-    qualifiers <- mapM (emapQualifierM vf) $ qualifiers sp
+    qualifiers <- mapM (emapQualifierM bscp vf) $ qualifiers sp
     cmeasures <- mapM (emapMeasureM vf (traverse . f)) (cmeasures sp)
     imeasures <- mapM (emapMeasureM vf (traverse . f)) (imeasures sp)
     omeasures <- mapM (emapMeasureM vf (traverse . f)) (omeasures sp)
@@ -534,10 +570,18 @@ emapRTAlias f rt = do
     rtBody <- f (rtTArgs rt ++ rtVArgs rt) (rtBody rt)
     return rt{rtBody}
 
-emapQualifierM :: Monad m => ([F.Symbol] -> v0 -> m v1) -> F.QualifierV v0 -> m (F.QualifierV v1)
-emapQualifierM f q = do
-    qBody <- emapExprVM (f . (++ map F.qpSym (F.qParams q))) (F.qBody q)
-    return q{F.qBody}
+emapQualifierM
+  :: Monad m => Bool -> ([F.Symbol] -> v0 -> m v1) -> LHQualifier v0 -> m (LHQualifier v1)
+emapQualifierM bscp f q = do
+    lhqBody <- emapExprVM (f . (++ map lhqpSym (lhqParams q))) (lhqBody q)
+    lhqParams <- mapM (mapLHQualParamM bscp f) (lhqParams q)
+    return q{lhqBody, lhqParams}
+
+mapLHQualParamM
+  :: Monad m => Bool -> ([F.Symbol] -> v0 -> m v1) -> LHQualParam v0 -> m (LHQualParam v1)
+mapLHQualParamM bscp f qp = do
+    lhqpSort <- emapBareTypeVM bscp f [] (lhqpSort qp)
+    return qp{lhqpSort}
 
 emapEquationM :: Monad m => ([F.Symbol] -> v0 -> m v1) -> F.EquationV v0 -> m (F.EquationV v1)
 emapEquationM f e = do

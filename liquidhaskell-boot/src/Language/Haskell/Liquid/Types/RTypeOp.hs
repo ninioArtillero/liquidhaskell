@@ -27,6 +27,7 @@ module Language.Haskell.Liquid.Types.RTypeOp (
   , efoldReft, foldReft, foldReft'
   , emapReft, mapReft, mapReftM, mapPropM
   , emapReftM, emapRefM
+  , mapBareTypeV
   , mapExprReft
   , mapBot, mapBind, mapRFInfo
   , foldRType
@@ -439,7 +440,10 @@ emapExprArg f = go
     mo γ (RProp s t)         = RProp s (go γ t)
 
 parsedToBareType :: BareTypeParsed -> BareType
-parsedToBareType = mapRTypeV F.val . mapReft (mapUReftV F.val (fmap F.val))
+parsedToBareType = mapBareTypeV F.val
+
+mapBareTypeV :: (v0 -> v1) -> BareTypeV v0 -> BareTypeV v1
+mapBareTypeV f = mapRTypeV f . mapReft (mapUReftV f (fmap f))
 
 foldRType :: (acc -> RType c tv r -> acc) -> acc -> RType c tv r -> acc
 foldRType f = go
