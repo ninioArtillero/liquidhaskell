@@ -77,6 +77,7 @@ import qualified Data.HashSet                            as HS
 import qualified Data.HashMap.Strict                     as HM
 import           Data.List (find, isSuffixOf, nubBy)
 import           Data.List.Extra (dropEnd)
+import qualified Data.Map as Map
 import           Data.Maybe (fromMaybe, listToMaybe, mapMaybe, maybeToList)
 import qualified Data.Text                               as Text
 import qualified GHC.Types.Name.Occurrence
@@ -556,7 +557,7 @@ makeLogicEnvs impAvails thisModule spec dependencies =
       coerce @_ @[HM.HashMap Symbol [(GHC.ModuleName, (GHC.Module, LHName))]]
 
     moduleAliases m =
-      case GHC.lookupModuleEnv impAvails m of
+      case Map.lookup m impAvails of
         Just impBys -> concatMap imvAliases $ GHC.importedByUser impBys
         Nothing
           | thisModule == m ->
@@ -568,7 +569,7 @@ makeLogicEnvs impAvails thisModule spec dependencies =
               concat $ maybeToList $ do
                 pString <- dropLHAssumptionsSuffix m
                 pMod <- findDependency pString
-                GHC.lookupModuleEnv impAvails pMod
+                Map.lookup pMod impAvails
 
     dropLHAssumptionsSuffix m =
       let mString = GHC.moduleNameString (GHC.moduleName m)
@@ -580,7 +581,7 @@ makeLogicEnvs impAvails thisModule spec dependencies =
 
     findDependency ms =
       find ((ms ==) . GHC.moduleNameString . GHC.moduleName) $
-      GHC.moduleEnvKeys impAvails
+      Map.keys impAvails
 
     imvAliases imv
       | GHC.imv_qualified imv = [GHC.imv_name imv]
