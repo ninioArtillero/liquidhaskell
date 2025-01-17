@@ -122,7 +122,7 @@ makeEnv cfg ghcTyLookupEnv tcg instEnv localVars src lmap specs = RE
     globalSyms  = concatMap getGlobalSyms specs
     syms        = [ (F.symbol v, v) | v <- vars ]
     vars        = srcVars src
-    usedExternals = Ghc.exprsOrphNames $ map snd $ Ghc.flattenBinds $ _giCbs src
+    usedExternals = Ghc.orphNamesOfExprs $ map snd $ Ghc.flattenBinds $ _giCbs src
 
 
 getGlobalSyms :: (ModName, BareSpec) -> [F.Symbol]

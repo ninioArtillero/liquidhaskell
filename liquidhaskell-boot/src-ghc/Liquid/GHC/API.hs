@@ -326,10 +326,10 @@ import GHC.Core.Predicate             as Ghc
     ( getClassPredTys_maybe
     , getClassPredTys
     , isEvVarType
-    , isEqClassPred
     , isEqPred
     , isClassPred
     , isDictId
+    , isNomEqPred
     , mkClassPred
     )
 import GHC.Core.Reduction             as Ghc
@@ -465,7 +465,7 @@ import GHC.Plugins                    as Ghc ( Serialized(Serialized)
 import GHC.Core.FVs                   as Ghc
     ( exprFreeVars
     , exprFreeVarsList
-    , exprsOrphNames
+    , orphNamesOfExprs
     , exprSomeFreeVarsList
     )
 import GHC.Core.Opt.OccurAnal         as Ghc
