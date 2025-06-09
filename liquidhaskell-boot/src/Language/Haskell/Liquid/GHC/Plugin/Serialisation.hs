@@ -21,6 +21,7 @@ import           Data.Generics (ext0, gmapAccumT)
 import           Data.HashMap.Strict                     as M
 import           Data.Maybe                               ( listToMaybe )
 import           Data.Word                               (Word8)
+import           GHC.Stack
 
 import qualified Liquid.GHC.API as GHC
 import           Language.Haskell.Liquid.GHC.Plugin.Types (LiquidLib)
@@ -65,7 +66,8 @@ serialiseLiquidLib lib thisModule = do
       (GHC.toSerialized unLiquidLibBytes (LiquidLibBytes $ B.unpack bs))
 
 deserialiseLiquidLib
-  :: GHC.Module
+  :: HasCallStack
+  => GHC.Module
   -> GHC.ExternalPackageState
   -> GHC.HomePackageTable
   -> GHC.NameCache
@@ -79,7 +81,8 @@ deserialiseLiquidLib thisModule eps hpt nameCache = do
       _ -> return Nothing
 
 deserialiseLiquidLibFromEPS
-  :: GHC.Module
+  :: HasCallStack
+  => GHC.Module
   -> GHC.ExternalPackageState
   -> GHC.NameCache
   -> IO (Maybe LiquidLib)
@@ -99,7 +102,7 @@ encodeLiquidLib lib0 = do
     GHC.withBinBuffer bh $ \bs ->
       return $ Builder.toLazyByteString $ B.execPut (B.put lib1) <> Builder.fromByteString bs
 
-decodeLiquidLib :: GHC.NameCache -> B.ByteString -> IO LiquidLib
+decodeLiquidLib :: HasCallStack => GHC.NameCache -> B.ByteString -> IO LiquidLib
 decodeLiquidLib nameCache bs0 = do
     case B.decodeOrFail bs0 of
       Left (_, _, err) -> error $ "decodeLiquidLib: decodeOrFail: " ++ err
@@ -110,7 +113,7 @@ decodeLiquidLib nameCache bs0 = do
             arr = Array.listArray (0, n - 1) ns
         return $ mapLHNames (resolveLHNameIndex arr) lib
   where
-    resolveLHNameIndex :: Array.Array Word LHResolvedName -> LHName -> LHName
+    resolveLHNameIndex :: HasCallStack => Array.Array Word LHResolvedName -> LHName -> LHName
     resolveLHNameIndex arr lhname =
       case getLHNameResolved lhname of
         LHRIndex i ->

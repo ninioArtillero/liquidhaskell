@@ -18,6 +18,7 @@ import           Data.Bifunctor
 import qualified Data.Char
 import           Data.IORef
 import           Data.Maybe
+import           GHC.Stack
 
 import           Control.Monad.Trans.Maybe
 
@@ -38,7 +39,8 @@ data SpecFinderResult =
 --
 -- Assumptions are taken from _LHAssumptions modules only if the interface
 -- file of the matching module contains no spec.
-findRelevantSpecs :: [String] -- ^ Package to exclude for loading LHAssumptions
+findRelevantSpecs :: HasCallStack
+                  => [String] -- ^ Package to exclude for loading LHAssumptions
                   -> HscEnv
                   -> [Module]
                   -- ^ Any relevant module fetched during dependency-discovery.
@@ -48,7 +50,7 @@ findRelevantSpecs lhAssmPkgExcludes hscEnv mods = do
     mapM (loadRelevantSpec eps) mods
   where
 
-    loadRelevantSpec :: ExternalPackageState -> Module -> TcM SpecFinderResult
+    loadRelevantSpec :: HasCallStack => ExternalPackageState -> Module -> TcM SpecFinderResult
     loadRelevantSpec eps currentModule = do
       res <- liftIO $ runMaybeT $
         lookupInterfaceAnnotations eps (ue_hpt $ hsc_unit_env hscEnv) (hsc_NC hscEnv) currentModule
@@ -85,12 +87,12 @@ findRelevantSpecs lhAssmPkgExcludes hscEnv mods = do
       mkModuleNameFS $ moduleNameFS (moduleName m) <> "_LHAssumptions"
 
 -- | Load specs from an interface file.
-lookupInterfaceAnnotations :: ExternalPackageState -> HomePackageTable -> NameCache -> SpecFinder m
+lookupInterfaceAnnotations :: HasCallStack => ExternalPackageState -> HomePackageTable -> NameCache -> SpecFinder m
 lookupInterfaceAnnotations eps hpt nameCache thisModule = do
   lib <- MaybeT $ Serialisation.deserialiseLiquidLib thisModule eps hpt nameCache
   pure $ LibFound thisModule lib
 
-lookupInterfaceAnnotationsEPS :: ExternalPackageState -> NameCache -> SpecFinder m
+lookupInterfaceAnnotationsEPS :: HasCallStack => ExternalPackageState -> NameCache -> SpecFinder m
 lookupInterfaceAnnotationsEPS eps nameCache thisModule = do
   lib <- MaybeT $ Serialisation.deserialiseLiquidLibFromEPS thisModule eps nameCache
   pure $ LibFound thisModule lib

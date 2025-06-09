@@ -74,6 +74,9 @@ import           Language.Haskell.Liquid.Bare
 import qualified Language.Haskell.Liquid.Bare.Resolve as Resolve
 import           Language.Haskell.Liquid.UX.CmdLine
 import           Language.Haskell.Liquid.UX.Config
+import           GHC.Stack
+import           Control.Exception
+import           Control.Exception.Context
 
 -- | Represents an abnormal but non-fatal state of the plugin. Because it is not
 -- meant to escape the plugin, it is not thrown in IO but instead carried around
@@ -448,7 +451,7 @@ isIgnore sp = any ((== "--skip-module") . F.val) (pragmas sp)
 -- | Working with bare & lifted specs ------------------------------------------
 --------------------------------------------------------------------------------
 
-loadDependencies :: Config -> [Module] -> TcM TargetDependencies
+loadDependencies :: HasCallStack => Config -> [Module] -> TcM TargetDependencies
 loadDependencies currentModuleConfig mods = do
   hscEnv    <- env_top <$> getEnv
   results   <- SpecFinder.findRelevantSpecs
@@ -490,7 +493,7 @@ data ProcessModuleResult = ProcessModuleResult {
   -- ^ The 'GhcInfo' for the current 'Module' that LiquidHaskell will process.
   }
 
-processModule :: LiquidHaskellContext -> TcM (Either LiquidCheckException ProcessModuleResult)
+processModule :: HasCallStack => LiquidHaskellContext -> TcM (Either LiquidCheckException ProcessModuleResult)
 processModule LiquidHaskellContext{..} = do
   let modGuts0   = lhModuleGuts
       thisModule = mg_module modGuts0

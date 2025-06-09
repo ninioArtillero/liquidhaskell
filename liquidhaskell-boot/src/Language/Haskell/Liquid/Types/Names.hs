@@ -292,10 +292,12 @@ getLHNameSymbol :: LHName -> Symbol
 getLHNameSymbol (LHNResolved _ s) = s
 getLHNameSymbol (LHNUnresolved _ s) = s
 
--- | Get the resolved Symbol from an LHName.
+-- | Get the resolved Name from an LHName.
 getLHNameResolved :: HasCallStack => LHName -> LHResolvedName
 getLHNameResolved (LHNResolved n _) = n
-getLHNameResolved n@LHNUnresolved{} = error $ "getLHNameResolved: unresolved name: " ++ show n
+getLHNameResolved n@LHNUnresolved{} =
+  let msg = "getLHNameResolved: unresolved name: " ++ show n ++ "\n"
+   in error (msg ++ prettyCallStack callStack)
 
 getLHGHCName :: LHName -> Maybe GHC.Name
 getLHGHCName (LHNResolved (LHRGHC n) _) = Just n
