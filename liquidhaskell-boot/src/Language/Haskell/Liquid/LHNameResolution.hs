@@ -142,6 +142,7 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
           flip runState RenameOutput {roErrors = [], roUsedNames = [], roUsedDataCons = mempty} $ do
             -- A generic traversal that resolves names of Haskell entities
             sp1 <- mapMLocLHNames (\l -> (<$ l) <$> resolveLHName l) $
+                     -- TEMP-NOTE: Are both logic and Haskell aliases under the same representation?
                      fixExpressionArgsOfTypeAliases taliases bareSpec0
             -- Data decls contain fieldnames that introduce measures with the
             -- same names. We resolved them before constructing the logic
@@ -373,6 +374,8 @@ resolveBoundVarsInTypeAliases :: BareSpecParsed -> BareSpecParsed
 resolveBoundVarsInTypeAliases = updateAliases resolveBoundVars
   where
     resolveBoundVars boundVars = \case
+      -- TEMP-NOTE: why are bound variables resolved to local names? why do they come from
+      -- "typecheck" names? Guess I don't understand name spaces.
       LHNUnresolved LHTcName s ->
         if elem s boundVars then
           LHNResolved (LHRLocal s) s

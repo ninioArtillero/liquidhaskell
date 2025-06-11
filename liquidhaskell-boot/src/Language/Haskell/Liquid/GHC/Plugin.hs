@@ -394,6 +394,12 @@ liquidHaskellCheckWithConfig cfg pipelineData modSummary = do
     `Ex.catch` (\(e :: UserError) -> reportErrs [e])
     `Ex.catch` (\(e :: Error) -> reportErrs [e])
     `Ex.catch` (\(es :: [Error]) -> reportErrs es)
+    -- TEMP-NOTE: Looking for lost errors (REMOVE AFTER FIX)
+    -- This effectively catches some introduced errors by the change in rtName
+    `Ex.catch` (\(ExceptionWithContext ctx (e :: ErrorCall)) ->
+                  liftIO $ do putStrLn (displayExceptionContext ctx)
+                              print e
+                              pure $ Left (ErrorsOccurred []) )
 
   where
     thisFile = LH.modSummaryHsFile modSummary
@@ -579,6 +585,11 @@ processModule LiquidHaskellContext{..} = do
       `Ex.catch` (\(e :: UserError) -> reportErrs [e])
       `Ex.catch` (\(e :: Error) -> reportErrs [e])
       `Ex.catch` (\(es :: [Error]) -> reportErrs es)
+      -- TEMP-NOTE: Looking for lost errors (REMOVE AFTER FIX)
+      `Ex.catch` (\(ExceptionWithContext ctx (e :: ErrorCall)) ->
+                    liftIO $ do putStrLn (displayExceptionContext ctx)
+                                print e
+                                pure $ Left (ErrorsOccurred []) )
 
 makeTargetSrc :: Config
               -> FilePath

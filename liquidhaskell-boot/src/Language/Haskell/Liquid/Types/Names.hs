@@ -116,6 +116,7 @@ instance Hashable LHName where
   hashWithSalt s (LHNResolved n _) = hashWithSalt s n
   hashWithSalt s (LHNUnresolved ns sym) = s `hashWithSalt` ns `hashWithSalt` sym
 
+-- TEMP-NOTE: why are this namespaces? Why are they classified like this?
 data LHNameSpace
     = LHTcName                            -- ^ Type constructors
     | LHDataConName LHThisModuleNameFlag  -- ^ Data constructors with procedence
