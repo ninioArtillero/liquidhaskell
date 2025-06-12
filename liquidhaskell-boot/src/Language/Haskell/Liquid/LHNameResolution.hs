@@ -141,11 +141,13 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
     let ((bs, logicNameEnv, lmap2), ro) =
           flip runState RenameOutput {roErrors = [], roUsedNames = [], roUsedDataCons = mempty} $ do
             -- A generic traversal that resolves names of Haskell entities
+            -- TEMP-NOTE: A generic traversal that resolves all (top-level) names but logic names.
+            -- TEMP-NOTE: Type aliases are resolved here!
             sp1 <- mapMLocLHNames (\l -> (<$ l) <$> resolveLHName l) $
-                     -- TEMP-NOTE: Are both logic and Haskell aliases under the same representation?
+                     -- TEMP-NOTE: Resolve names in type alias expression.
                      fixExpressionArgsOfTypeAliases taliases bareSpec0
             -- Data decls contain fieldnames that introduce measures with the
-            -- same names. We resolved them before constructing the logic
+            -- same names. We resolve them before constructing the logic
             -- environment.
             dataDecls <- mapM (mapDataDeclFieldNamesM resolveFieldLogicName) (dataDecls sp1)
             let sp2 = sp1 {dataDecls}
@@ -154,6 +156,7 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
             if null es0 then do
 
               -- Now we do a second traversal to resolve logic names
+              -- TEMP-NOTE: expression aliases live in unhandledNames
               let (inScopeEnv, logicNameEnv0, privateReflectNames, unhandledNames) =
                     makeLogicEnvs impMods thisModule sp2 dependencies
               -- Add resolved local defines to the logic map
@@ -187,7 +190,6 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
     else
       Left (roErrors ro)
   where
-    -- TEMP-NOTE: (3) At this point aliases are collected for name resolution.
     taliases = collectTypeAliases thisModule bareSpec0 dependencies
     allEaliases = collectExprAliases bareSpec0 dependencies
 
@@ -214,6 +216,7 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
           | s == "*" ->
             pure $ LHNResolved (LHRGHC GHC.liftedTypeKindTyConName) s
           | otherwise ->
+            -- TEMP-NOTE:* Here we are resolving the uses of type aliases
             case HM.lookup s taliases of
               Just (m, _) -> pure $ LHNResolved (LHRLogic $ LogicName s m Nothing) s
               Nothing -> lookupGRELHName LHTcName lname s listToMaybe
@@ -228,9 +231,12 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
         n@(LHNUnresolved LHLogicName _) ->
           -- This one will be resolved by resolveLogicNames
           pure n
+        -- TEMP-NOTE: This case matches LHDataConName namespace.
         LHNUnresolved ns s -> lookupGRELHName ns lname s listToMaybe
+        -- TEMP-NOTE: Return resolved names
         n -> pure n
 
+    -- TEMP-NOTE: find names in GHC naming environment
     lookupGRELHName ns lname s localNameLookup =
       case maybeDropImported ns $ GHC.lookupGRE globalRdrEnv (mkLookupGRE ns s) of
         [e] -> do
@@ -240,6 +246,8 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
         es@(_:_) -> do
           let topLevelNames = map GHC.greName es
           case localNameLookup topLevelNames of
+            -- TEMP-NOTE: the predicate seems contradictory, why do this?
+            -- May be so that we only resolve the ambiguous name if it comes from other module.
             Just n | notElem n topLevelNames ->
               pure $ LHNResolved (LHRGHC n) s
             _ -> do
@@ -374,8 +382,6 @@ resolveBoundVarsInTypeAliases :: BareSpecParsed -> BareSpecParsed
 resolveBoundVarsInTypeAliases = updateAliases resolveBoundVars
   where
     resolveBoundVars boundVars = \case
-      -- TEMP-NOTE: why are bound variables resolved to local names? why do they come from
-      -- "typecheck" names? Guess I don't understand name spaces.
       LHNUnresolved LHTcName s ->
         if elem s boundVars then
           LHNResolved (LHRLocal s) s
@@ -396,6 +402,7 @@ resolveBoundVarsInTypeAliases = updateAliases resolveBoundVars
 
 -- | The expression arguments of type aliases are initially parsed as
 -- types. This function converts them to expressions.
+-- TEMP-NOTE: and resolves the names of their (type and value) arguments.
 --
 -- For instance, in @Prop (Ev (plus n n))@ where `Prop` is the alias
 --
@@ -403,7 +410,6 @@ resolveBoundVarsInTypeAliases = updateAliases resolveBoundVars
 --
 -- the parser builds a type for @Ev (plus n n)@.
 --
--- TEMP-NOTE: what's going on here?
 fixExpressionArgsOfTypeAliases
   :: HM.HashMap Symbol (GHC.Module, RTAlias Symbol ())
   -> BareSpecParsed
@@ -412,6 +418,7 @@ fixExpressionArgsOfTypeAliases taliases =
     mapBareTypes go . resolveBoundVarsInTypeAliases
   where
     go :: BareTypeParsed -> BareTypeParsed
+    -- TEMP-NOTE:* Type aliases are initially parsed as type constructors.
     go (RApp c@(BTyCon { btc_tc = Loc _ _ (LHNUnresolved LHTcName s) }) ts rs r)
       | Just (_, rta) <- HM.lookup s taliases =
         RApp c (fixExprArgs (btc_tc c) rta (map go ts)) (map goRef rs) r
@@ -442,15 +449,15 @@ mapBareTypes f  = go
     go :: Data a => a -> a
     go = gmapT (go `extT` f)
 
--- | exprArg converts a tyVar to an exprVar because parser cannot tell
---   this function allows us to treating (parsed) "types" as "value"
+-- | 'exprArg' converts a tyVar to an exprVar because parser cannot tell.
+--   This function allows us to treating (parsed) "types" as "value"
 --   arguments, e.g. type Matrix a Row Col = List (List a Row) Col
 --   Note that during parsing, we don't necessarily know whether a
 --   string is a type or a value expression. E.g. in tests/pos/T1189.hs,
---   the string `Prop (Ev (plus n n))` where `Prop` is the alias:
+--   the string @Prop (Ev (plus n n))@ where @Prop@ is the alias:
 --     {-@ type Prop E = {v:_ | prop v = E} @-}
---   the parser will chomp in `Ev (plus n n)` as a `BareType` and so
---   `exprArg` converts that `BareType` into an `Expr`.
+--   the parser will chomp in @Ev (plus n n)@ as a 'BareType' and so
+--   'exprArg' converts that 'BareType' into an @Expr@.
 exprArg :: SourcePos -> String -> BareTypeParsed -> ExprV LocSymbol
 exprArg l msg = notracepp ("exprArg: " ++ msg) . go
   where
@@ -472,6 +479,7 @@ type InScopeNonReflectedEnv = SEnv [(GHC.ModuleName, (GHC.Module, LHName))]
 -- | Looks the names in scope with the given symbol.
 -- Returns a list of close but different symbols or a non empty list
 -- with the matched names.
+-- TEMP-NOTE:* if we add type aliases here, they could be used qualified.
 lookupInScopeNonReflectedEnv
   :: InScopeNonReflectedEnv -> Symbol -> Either [Symbol] [(GHC.Module, LHName)]
 lookupInScopeNonReflectedEnv env s = do
@@ -494,18 +502,26 @@ lookupInScopeNonReflectedEnv env s = do
 -- Also returns a LogicNameEnv constructed from the same names.
 -- Also returns the names of reflected private functions.
 -- Also returns the set of all names that aren't handled yet by name resolution.
+-- TEMP-NOTE:** A possible starting point to use qualified aliases might be
+-- adding then to other environments. In particular, the 'InScopeNonReflectedEnv'
+-- is used to lookup qualified names.
 makeLogicEnvs
   :: GHC.ImportedMods
   -> GHC.Module
   -> BareSpecParsed
   -> TargetDependencies
-  -> ( InScopeNonReflectedEnv
-     , LogicNameEnv
-     , HS.HashSet LocSymbol
-     , HS.HashSet Symbol
+  -> ( InScopeNonReflectedEnv -- ^ TEMP-NOTE: A 'Symbol' map of all names resolved in the first pass
+                              -- plus logic names from dependencies. Reflected names are filtered out.
+                              -- Represented as triplets containing module and module aliases.
+     , LogicNameEnv           -- ^ TEMP-NOTE: A 'Symbol' map of all logic names and a
+                              -- 'NAME' map of reflected names.
+     , HS.HashSet LocSymbol   -- ^ TEMP-NOTE: All private (local) reflected fuctions from the
+                              -- current module and its dependencies.
+     , HS.HashSet Symbol      -- ^ TEMP-NOTE: Currently, predicate aliases are the only "unhandled names".
      )
 makeLogicEnvs impAvails thisModule spec dependencies =
-    -- TEMP-NOTE: Qualified names for the logic environment are handled here
+    -- TEMP-NOTE: Might be legacy code, maybe qualified names cannot come in
+    -- in the unhandledNamesList.
     let unqualify s =
           if s == LH.qualifySymbol (symbol $ GHC.moduleName thisModule) (LH.dropModuleNames s) then
             LH.dropModuleNames s
@@ -515,15 +531,17 @@ makeLogicEnvs impAvails thisModule spec dependencies =
         -- Names should be removed from this list as they are supported
         -- by renaming.
         unhandledNames = HS.fromList $
+          -- TEMP-NOTE: Adds both the unqualified and qualified symbol.
+          -- This could qualify some symbols twice. Check to fix or simplify later:
           map unqualify unhandledNamesList ++ map (LH.qualifySymbol (symbol $ GHC.moduleName thisModule)) unhandledNamesList
         unhandledNamesList =
-          -- TEMP-NOTE: predicate aliases are added to the environment here
-          -- For now I keep the symbol to minimise propagation, but could later
-          -- try to use the full LHName.
+          -- TEMP-NOTE: only predicate aliases are added as unhandled names, both
+          -- from the current module and dependencies.
           map (getLHNameSymbol . val . rtName . val) (ealiases spec)
           ++ concatMap (map getLHNameSymbol . snd) unhandledLogicNames
         unhandledLogicNames =
           map (fmap collectUnhandledLiftedSpecLogicNames) dependencyPairs
+        -- TEMP-NOTE:* Why are type aliases not included?
         logicNames =
           (thisModule, thisModuleNames) :
           map (fmap collectLiftedSpecLogicNames) dependencyPairs
@@ -606,11 +624,14 @@ makeLogicEnvs impAvails thisModule spec dependencies =
 
     mkLogicNameEnv names =
       LogicNameEnv
+        -- TEMP-NOTE: A symbol-map of all resolved logic names. Note only local and generated names are not qualified.
         { lneLHName = fromListSEnv [ (lhNameToResolvedSymbol n, n) | n <- names ]
+        -- TEMP-NOTE: A name-map of all logic names comming from reflected Haskell functions.
         , lneReflected = GHC.mkNameEnv [(rn, n) | n <- names, Just rn <- [maybeReflectedLHName n]]
         }
 
 {- HLINT ignore collectUnhandledLiftedSpecLogicNames "Use ++" -}
+-- TEMP-NOTE: This implies that expression aliases are the sole unhandled logic names
 collectUnhandledLiftedSpecLogicNames :: LiftedSpec -> [LHName]
 collectUnhandledLiftedSpecLogicNames sp =
     map (makeLocalLHName . LH.dropModuleNames . lhNameToResolvedSymbol. val . rtName . val) $ HS.toList $ liftedEaliases sp
@@ -623,6 +644,9 @@ collectLiftedSpecLogicNames sp = concat
     , map fst $ concatMap DataDecl.dcFields $ concat $
         mapMaybe DataDecl.tycDCons $
         HS.toList $ liftedDataDecls sp
+    -- TEMP-NOTE: All aliases could be included in the environments like so:
+    --, map (rtName . val) $ HS.toList $ liftedAliases sp
+    --, map (rtName . val) $ HS.toList $ liftedEaliases sp
     ]
 
 -- | Resolves names in the logic namespace
@@ -632,22 +656,24 @@ collectLiftedSpecLogicNames sp = concat
 -- the names of data constructors that are found during renaming.
 resolveLogicNames
   :: Config
-  -> InScopeNonReflectedEnv
+  -> InScopeNonReflectedEnv  -- ^ Non-reflected logic names with module aliases
   -> GHC.GlobalRdrEnv
-  -> HS.HashSet Symbol
-  -> LogicMap
+  -> HS.HashSet Symbol       -- ^ Unhandled names: expression (predicate) aliases.
+  -> LogicMap                -- ^ Contains the existing definitions in the logic.
   -> LocalVars
-  -> LogicNameEnv
-  -> HS.HashSet LocSymbol
-  -> HS.HashSet Symbol
+  -> LogicNameEnv            -- ^ All logic names, but aliases
+  -> HS.HashSet LocSymbol    -- ^ Reflected local funcions
+  -> HS.HashSet Symbol       -- ^ Expression aliases
   -> BareSpecParsed
   -> State RenameOutput BareSpecLHName
 resolveLogicNames cfg env globalRdrEnv unhandledNames lmap0 localVars lnameEnv privateReflectNames allEaliases sp = do
     -- Instance measures must be defined for names of class measures.
     -- The names of class measures should be in @env@
+    -- TEMP-NOTE: This are all traversals using 'resolveLogicName'.
     imeasures <- mapM (mapMeasureNamesM resolveIMeasLogicName) (imeasures sp)
     emapSpecM
       (bscope cfg)
+      -- TEMP-NOTE: why only GHC names have a non-empty local environment?
       (map localVarToSymbol . maybe [] lvdLclEnv . (GHC.lookupNameEnv (lvNames localVars) <=< getLHGHCName))
       resolveLogicName
       (emapBareTypeVM (bscope cfg) resolveLogicName)
