@@ -179,7 +179,8 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
                          allEaliases
                          sp2
               dcs <- gets roUsedDataCons
-              return (sp3 {usedDataCons = dcs} , logicNameEnv0, lmap1)
+              checkUnresolvedAlias sp1 `seq`
+                return (sp3 {usedDataCons = dcs} , logicNameEnv0, lmap1)
             else
               return ( error "resolveLHNames: invalid spec"
                      , error "resolveLHNames: invalid logic environment"
@@ -299,6 +300,19 @@ tupleArity s =
             error $ "tupleArity: Too large (more than 64): " ++ show a
           else
             a
+
+checkUnresolvedAlias :: Spec lname ty -> ()
+checkUnresolvedAlias sp =
+    let unresolvedAliases = [ rtName (val a) | a <- aliases sp, isUnresolvedAlias (val a)]
+     in if (null unresolvedAliases) then ()
+          else
+            error $ "checkUnresolvedAlias: Unresolved type aliases: " ++ showpp unresolvedAliases
+  where
+    isUnresolvedAlias :: RTAlias s b -> Bool
+    isUnresolvedAlias a =
+      case rtName a of
+        LHNUnresolved _ _ -> True
+        _ -> False
 
 errResolve :: PJ.Doc -> String -> LocSymbol -> Error
 errResolve k msg lx = ErrResolve (LH.fSrcSpan lx) k (pprint (val lx)) (PJ.text msg)
