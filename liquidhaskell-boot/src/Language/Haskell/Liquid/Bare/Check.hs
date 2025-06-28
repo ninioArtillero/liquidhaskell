@@ -166,7 +166,6 @@ checkTargetSpec specs src env cbs tsp
                      -- TODO-REBARE ++ checkQualifiers env                                       (gsQualifiers (gsQual sp))
                      <> checkDuplicate                                            (gsAsmSigs    (gsSig tsp))
                      <> checkDupIntersect                                         (gsTySigs (gsSig tsp)) (gsAsmSigs (gsSig tsp))
-                     <> checkRTAliases "Type Alias" env            tAliases
                      <> checkRTAliases "Pred Alias" env            eAliases
                      -- ++ _checkDuplicateFieldNames                   (gsDconsP sp)
                      -- NV TODO: allow instances of refined classes to be refined
@@ -181,7 +180,6 @@ checkTargetSpec specs src env cbs tsp
 
     _rClasses         = concatMap Ms.classes specs
     _rInsts           = concatMap Ms.rinstance specs
-    tAliases          = concat [Ms.aliases sp  | sp <- specs]
     eAliases          = concat [Ms.ealiases sp | sp <- specs]
     emb              = gsTcEmbeds (gsName tsp)
     tcEnv            = gsTyconEnv (gsName tsp)
