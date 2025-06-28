@@ -1444,7 +1444,7 @@ mkRTE tAs eAs   = RTE
   { typeAliases = M.fromList [ (aName a, a) | a <- tAs ]
   , exprAliases = M.fromList [ (aName a, a) | a <- eAs ]
   }
-  where aName   = lhNameToUnqualifiedSymbol . F.val . rtName . F.val
+  where aName   = getLHNameSymbol . F.val . rtName . F.val
 
 -- | Prepare an alias for constraint checking by expanding its body and fixing its type argument names.
 normalizeBareAlias :: Bare.Env -> Bare.SigEnv -> ModName -> Located BareRTAlias

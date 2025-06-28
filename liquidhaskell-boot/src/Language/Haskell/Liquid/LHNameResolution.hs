@@ -642,7 +642,7 @@ moduleAliases thisModule impMods m =
 {- HLINT ignore collectUnhandledLiftedSpecLogicNames "Use ++" -}
 collectUnhandledLiftedSpecLogicNames :: LiftedSpec -> [LHName]
 collectUnhandledLiftedSpecLogicNames sp =
-    map (makeLocalLHName . LH.dropModuleNames . lhNameToResolvedSymbol. val . rtName . val) $ HS.toList $ liftedEaliases sp
+    map (makeLocalLHName . LH.dropModuleNames . getLHNameSymbol . val . rtName . val) $ HS.toList $ liftedEaliases sp
 
 collectLiftedSpecLogicNames :: LiftedSpec -> [LHName]
 collectLiftedSpecLogicNames sp = concat

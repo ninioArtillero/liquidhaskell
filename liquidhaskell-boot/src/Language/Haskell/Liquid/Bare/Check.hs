@@ -464,7 +464,7 @@ checkDuplicateRTAlias s tas = mkDiagnostics mempty (map mkError dups)
     mkError []                = panic Nothing "mkError: called on empty list"
     -- TEMP-NOTE: Duplicate aliases where not detected, as they were checked against
     -- a Located LHName: the actual symbol is needed here to detect the overlap.
-    dups                    = [z | z@(_:_:_) <- groupDuplicatesOn ( lhNameToUnqualifiedSymbol . val . rtName . val) tas]
+    dups                    = [z | z@(_:_:_) <- groupDuplicatesOn ( getLHNameSymbol . val . rtName . val) tas]
 
 groupDuplicatesOn :: Ord b => (a -> b) -> [a] -> [[a]]
 groupDuplicatesOn f = L.groupBy ((==) `on` f) . L.sortOn f
