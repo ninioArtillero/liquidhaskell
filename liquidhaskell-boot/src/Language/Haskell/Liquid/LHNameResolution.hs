@@ -220,7 +220,7 @@ resolveLHNames cfg thisModule localVars impMods globalRdrEnv bareSpec0 dependenc
             pure $ LHNResolved (LHRGHC GHC.liftedTypeKindTyConName) s
           | otherwise ->
             case lookupInScopeNonReflectedEnv taliases s of
-              Right [(m, _, _)] -> pure $ LHNResolved (LHRLogic $ LogicName s m Nothing) s
+              Right [(m, _, _)] -> pure $ LHNResolved (LHRLogic $ LogicName (LH.dropModuleNames s) m Nothing) s
               -- TEMP-NOTE: might have to handle multiple matches here
               _ -> lookupGRELHName LHTcName lname s listToMaybe
         LHNUnresolved ns@(LHVarName lcl) s
