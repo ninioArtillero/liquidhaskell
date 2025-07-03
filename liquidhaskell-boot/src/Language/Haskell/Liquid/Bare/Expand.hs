@@ -21,6 +21,9 @@ module Language.Haskell.Liquid.Bare.Expand
 
     -- * Re-exported for data-constructors
   , plugHoles
+
+    -- * Patch to deal with qualified type aliases lookup
+  , qualifiedAliasSymbol
   ) where
 
 import Prelude hiding (error)
@@ -40,7 +43,7 @@ import qualified Text.PrettyPrint.HughesPJ as PJ
 import qualified Language.Fixpoint.Types               as F
 -- import qualified Language.Fixpoint.Types.Visitor       as F
 import qualified Language.Fixpoint.Misc                as Misc
-import           Language.Fixpoint.Types (Expr, ExprV(..), SourcePos) -- , Symbol, symbol)
+import           Language.Fixpoint.Types (Expr, ExprV(..), SourcePos, Symbol, symbol)
 import qualified Language.Haskell.Liquid.GHC.Misc      as GM
 import qualified Liquid.GHC.API       as Ghc
 import           Language.Haskell.Liquid.Types.Errors
@@ -159,7 +162,7 @@ graphExpand buildEdges expBody env lxts
 setRTAlias :: RTEnv x t -> Located (RTAlias x t) -> RTEnv x t
 setRTAlias env a = env { typeAliases =  M.insert n a (typeAliases env) }
   where
-    n            = getLHNameSymbol . val . rtName $ val a
+    n            = qualifiedAliasSymbol . rtName $ val a
 
 -- | Inserts an expression alias in the environment. It can overwrite an alias
 -- with the same symbol.
@@ -174,7 +177,12 @@ setREAlias env a = env { exprAliases = M.insert n a (exprAliases env) }
 type AliasTable x t = M.HashMap F.Symbol (Located (RTAlias x t))
 
 buildAliasTable :: [Located (RTAlias x t)] -> AliasTable x t
-buildAliasTable = M.fromList . map (\rta -> (getLHNameSymbol . val . rtName $ val rta, rta))
+buildAliasTable xs = M.fromList . map (\rta -> (qualifiedAliasSymbol . rtName . val $ rta, rta)) $ xs
+
+qualifiedAliasSymbol:: Located LHName -> Symbol
+qualifiedAliasSymbol rta = case val rta of
+  (LHNResolved (LHRLogic (LogicName s m _)) _) -> GM.qualifySymbol (symbol . Ghc.moduleNameString $ Ghc.moduleName m) s
+  lhname -> getLHNameSymbol lhname
 
 fromAliasSymbol :: AliasTable x t -> F.Symbol -> Located (RTAlias x t)
 fromAliasSymbol table sym
@@ -195,7 +203,7 @@ buildAliasGraph buildEdges = map (buildAliasNode buildEdges)
 
 buildAliasNode :: (PPrint t) => (t -> [F.Symbol]) -> Located (RTAlias x t)
                -> Node F.Symbol
-buildAliasNode f la = (getLHNameSymbol . val $ rtName a, getLHNameSymbol . val $ rtName a, f (rtBody a))
+buildAliasNode f la = (qualifiedAliasSymbol $ rtName a, getLHNameSymbol . val $ rtName a, f (rtBody a))
   where
     a               = val la
 
@@ -419,7 +427,7 @@ expandBareType rtEnv l = go
     goRef (RProp ss t)   = RProp (map (expand rtEnv l <$>) ss) (go t)
 
 lookupRTEnv :: BTyCon -> BareRTEnv -> Maybe (Located BareRTAlias)
-lookupRTEnv c rtEnv = M.lookup (getLHNameSymbol $ val $ btc_tc c) (typeAliases rtEnv)
+lookupRTEnv c rtEnv = M.lookup (qualifiedAliasSymbol $ btc_tc c) (typeAliases rtEnv)
 
 expandRTAliasApp :: F.SourcePos -> Located BareRTAlias -> [BareType] -> RReft -> BareType
 expandRTAliasApp l (Loc la _ rta) args r = case isOK of
