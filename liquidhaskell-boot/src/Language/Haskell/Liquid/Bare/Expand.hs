@@ -22,7 +22,7 @@ module Language.Haskell.Liquid.Bare.Expand
     -- * Re-exported for data-constructors
   , plugHoles
 
-    -- * Patch to deal with qualified type aliases lookup
+    -- * For qualified type aliases lookup
   , qualifiedAliasSymbol
   ) where
 
@@ -134,7 +134,7 @@ renameRTVArgs rt = rt { rtVArgs = newArgs
 -- Note that from 'makeRTEnv' the input environement contains the expanded
 -- expression aliases only.
 makeRTAliases :: [Located (RTAlias F.Symbol BareType)] -> BareRTEnv -> BareRTEnv
-makeRTAliases lxts rte = graphExpand buildTypeEdges f rte lxts
+makeRTAliases lxts rte = graphExpand' buildTypeEdges f rte lxts
   where
     f rtEnv xt         = setRTAlias rtEnv (expandLoc rtEnv xt)
 
@@ -157,11 +157,30 @@ graphExpand buildEdges expBody env lxts
     graph  = buildAliasGraph (buildEdges table) lxts
     table' = checkCyclicAliases table graph
 
+-- | TEMP-NOTE: A tweaked version of 'graphExpand' intented to manage qualified type
+-- aliases symbols. If this could be applied in the same vein to predicate aliases,
+-- then we might leave only this version.
+graphExpand' :: (PPrint t)
+            => (AliasTable x t -> t -> [F.Symbol])         -- ^ dependencies
+            -> (thing -> Located (RTAlias x t) -> thing) -- ^ update
+            -> thing                                     -- ^ initial
+            -> [Located (RTAlias x t)]                   -- ^ vertices
+            -> thing                                     -- ^ final
+graphExpand' buildEdges expBody env lxts
+           = L.foldl' expBody env (genExpandOrder table' graph)
+  where
+    -- xts    = val <$> lxts
+    table  = buildAliasTable' lxts
+    graph  = buildAliasGraph' (buildEdges table) lxts
+    table' = checkCyclicAliases table graph
+
 -- | Inserts a type alias in the environment. It can overwrite an alias with the
 -- same symbol.
 setRTAlias :: RTEnv x t -> Located (RTAlias x t) -> RTEnv x t
 setRTAlias env a = env { typeAliases =  M.insert n a (typeAliases env) }
   where
+    -- TEMP-NOTE: The environment build with this functions eventually leaves
+    -- this module, so I export 'qualifiedAliasSymbol' to patch lookups at other places.
     n            = qualifiedAliasSymbol . rtName $ val a
 
 -- | Inserts an expression alias in the environment. It can overwrite an alias
@@ -177,7 +196,10 @@ setREAlias env a = env { exprAliases = M.insert n a (exprAliases env) }
 type AliasTable x t = M.HashMap F.Symbol (Located (RTAlias x t))
 
 buildAliasTable :: [Located (RTAlias x t)] -> AliasTable x t
-buildAliasTable xs = M.fromList . map (\rta -> (qualifiedAliasSymbol . rtName . val $ rta, rta)) $ xs
+buildAliasTable xs = M.fromList . map (\rta -> (getLHNameSymbol . val . rtName . val $ rta, rta)) $ xs
+
+buildAliasTable' :: [Located (RTAlias x t)] -> AliasTable x t
+buildAliasTable' xs = M.fromList . map (\rta -> (qualifiedAliasSymbol . rtName . val $ rta, rta)) $ xs
 
 qualifiedAliasSymbol:: Located LHName -> Symbol
 qualifiedAliasSymbol rta = case val rta of
@@ -203,9 +225,18 @@ buildAliasGraph buildEdges = map (buildAliasNode buildEdges)
 
 buildAliasNode :: (PPrint t) => (t -> [F.Symbol]) -> Located (RTAlias x t)
                -> Node F.Symbol
-buildAliasNode f la = (qualifiedAliasSymbol $ rtName a, getLHNameSymbol . val $ rtName a, f (rtBody a))
+buildAliasNode f la = (getLHNameSymbol . val $ rtName a, getLHNameSymbol . val $ rtName a, f (rtBody a))
   where
     a               = val la
+
+buildAliasGraph' :: (PPrint t) => (t -> [F.Symbol]) -> [Located (RTAlias x t)]
+                -> Graph F.Symbol
+buildAliasGraph' buildEdges = map (buildAliasNode' buildEdges)
+  where
+    buildAliasNode' :: (PPrint t) => (t -> [F.Symbol]) -> Located (RTAlias x t) -> Node F.Symbol
+    buildAliasNode' f la = (qualifiedAliasSymbol $ rtName a, qualifiedAliasSymbol $ rtName a, f (rtBody a))
+      where
+        a   = val la
 
 checkCyclicAliases :: AliasTable x t -> Graph F.Symbol -> AliasTable x t
 checkCyclicAliases table graph
