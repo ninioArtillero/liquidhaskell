@@ -140,8 +140,8 @@ makeRTAliases lxts rte = graphExpand' buildTypeEdges f rte lxts
 
 --------------------------------------------------------------------------------------------------------------
 
--- | Builds a directed graph of aliases, checks for cyclic
--- dependencies and orders them so that inner aliases come first,
+-- | Builds a directed graph of aliases to check for cyclic
+-- dependencies and order them in a list, so that /inner/ aliases come first,
 -- and folds over it to add each expanded node to the environment.
 graphExpand :: (PPrint t)
             => (AliasTable x t -> t -> [F.Symbol])         -- ^ dependencies
@@ -174,17 +174,14 @@ graphExpand' buildEdges expBody env lxts
     graph  = buildAliasGraph' (buildEdges table) lxts
     table' = checkCyclicAliases table graph
 
--- | Inserts a type alias in the environment. It can overwrite an alias with the
--- same symbol.
+-- | Inserts a type alias in the environment. We avoid overriding aliases
+-- their qualified symbols as keys.
 setRTAlias :: RTEnv x t -> Located (RTAlias x t) -> RTEnv x t
 setRTAlias env a = env { typeAliases =  M.insert n a (typeAliases env) }
   where
-    -- TEMP-NOTE: The environment build with this functions eventually leaves
-    -- this module, so I export 'qualifiedAliasSymbol' to patch lookups at other places.
     n            = qualifiedAliasSymbol . rtName $ val a
 
--- | Inserts an expression alias in the environment. It can overwrite an alias
--- with the same symbol.
+-- | Inserts an expression alias in the environment.
 setREAlias :: RTEnv x t -> Located (RTAlias F.Symbol F.Expr) -> RTEnv x t
 setREAlias env a = env { exprAliases = M.insert n a (exprAliases env) }
   where
@@ -204,6 +201,10 @@ buildAliasTable' xs = M.fromList . map (\rta -> (qualifiedAliasSymbol . rtName .
 qualifiedAliasSymbol:: Located LHName -> Symbol
 qualifiedAliasSymbol rta = case val rta of
   (LHNResolved (LHRLogic (LogicName s m _)) _) -> GM.qualifySymbol (symbol . Ghc.moduleNameString $ Ghc.moduleName m) s
+  -- TEMP-NOTE: fall back to use the outer symbol.
+  -- A 'panic' should go here if this case is unreacheable.
+  -- But might be needed when checking against type constructor names, e.g. in
+  -- 'buildTypeEdges' and 'lookupRTEnv'.
   lhname -> getLHNameSymbol lhname
 
 fromAliasSymbol :: AliasTable x t -> F.Symbol -> Located (RTAlias x t)
@@ -271,8 +272,8 @@ genExpandOrder table graph
 ordNub :: Ord a => [a] -> [a]
 ordNub = map head . L.group . L.sort
 
--- | Gathers all constructors in a 'BareType' whose symbol matches a key
--- from the table.
+-- | Gathers all constructor symbols in an alias body (of 'BareType'),
+-- that once qualified match a key from the table.
 buildTypeEdges :: AliasTable x t -> BareType -> [F.Symbol]
 buildTypeEdges table = ordNub . go
   where
