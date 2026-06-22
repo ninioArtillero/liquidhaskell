@@ -164,6 +164,7 @@ makeGhcSpec stratNames cfg lenv localVars src lmap bareSpec dependencySpecs = do
                                          (toTargetSrc src)
                                          (ghcSpecEnv sp)
                                          (_giCbs src)
+                                         localVars
                                          (toTargetSpec sp)
   pure $ if not (noErrors dg0) then Left dg0 else
            case diagnostics of

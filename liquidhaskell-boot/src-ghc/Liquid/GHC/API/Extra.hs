@@ -24,7 +24,7 @@ module Liquid.GHC.API.Extra (
   , thisPackage
   , tyConRealArity
   , untick
-  , collectFunBindPatNames
+  , collectFunBindPatNamesPositional
   , withTimingWallClock
   ) where
 
@@ -39,7 +39,9 @@ import Data.Data (Data, gmapQr, gmapT)
 import Data.Generics (extQ, extT)
 import Data.Foldable                  (asum)
 import Data.List                      (sortOn)
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import GHC.Builtin.Names ( dollarIdKey, minusName )
 import GHC.Core                       as Ghc
 import GHC.Core.Coercion              as Ghc
@@ -190,40 +192,56 @@ addNoInlinePragmasToBinds tcg = tcg{ tcg_binds = go (tcg_binds tcg) }
           { abe_poly = markId poly
           , abe_mono = markId mono }
 
--- | Collect all variable-pattern binder 'Name's from all equations of every
--- top-level 'FunBind' in the renamed source group.
+-- | Collect variable-pattern binder 'Name's from every equation of every
+-- top-level 'FunBind' in the renamed source group, tagged with their
+-- /argument position/.
 --
--- Returns a map from each top-level function's 'Name' to the list of 'Name's
--- that appear as 'VarPat' binders across /all/ equations of that function.
--- The list preserves duplicates (the same name may occur in multiple equations)
--- so callers can deduplicate as required.
+-- Returns a map from each top-level function's 'Name' to an 'IntMap' that
+-- maps each argument index (0-based) to the 'Set' of 'Name's that appear as
+-- plain 'VarPat' binders at that position across /all/ equations of that
+-- function.  Wildcard patterns (@_@) and constructor patterns are excluded;
+-- only top-level 'VarPat's are collected.
 --
--- This is used by the LiquidHaskell plugin to populate 'lvdExtraSymbols',
--- ensuring that local specs written in a later equation of a multi-equation
--- top-level function can refer to binders that are missing from the /first/
--- equation (e.g. because that equation uses a wildcard @_@).  Without this
--- information, GHC's desugaring drops those binder names entirely from the
--- Core representation, making them invisible to the normal name-resolution
--- logic that only inspects Core binders.
+-- This is used by the LiquidHaskell plugin to populate 'lvdExtraVars':
+-- for each local (where- or let-bound) helper of a top-level function, we
+-- pair every collected source name at position @i@ with the Core lambda binder
+-- at position @i@, making the source name visible as a synonym for that Core
+-- binder in specs.  This ensures that a local spec can mention e.g. @n@ even
+-- when @n@ only appears in the /second/ equation of the enclosing function and
+-- GHC's pattern-match desugaring has therefore replaced it with a
+-- compiler-generated name in the Core representation.
 --
 -- See https://github.com/ucsd-progsys/liquidhaskell/issues/2704
-collectFunBindPatNames :: HsGroup GhcRn -> Map.Map Name [Name]
-collectFunBindPatNames grp =
-    Map.fromListWith (++)
-      [ (fname, collectPatsBinders CollNoDictBinders (hsLMatchPats lmatch))
+collectFunBindPatNamesPositional
+  :: HsGroup GhcRn
+  -> Map.Map Name (IntMap.IntMap (Set.Set Name))
+collectFunBindPatNamesPositional grp =
+    Map.fromListWith (IntMap.unionWith Set.union)
+      [ (fname, posMap)
       | L _ bind  <- topBinds
       , FunBind { fun_id = L _ fname, fun_matches = mg } <- [bind]
-      , lmatch <- unLoc (mg_alts mg)
+      , lmatch    <- unLoc (mg_alts mg)
+      , let posMap = IntMap.fromList
+              [ (i, Set.singleton n)
+              | (i, lpat) <- zip [0..] (hsLMatchPats lmatch)
+              , Just n    <- [topLevelVarPat lpat]
+              ]
+      , not (IntMap.null posMap)
       ]
   where
-    -- | All top-level value bindings in the renamed group, regardless of
-    -- whether they come from a @ValBinds@ (pre-renaming) or @XValBindsLR@
-    -- (post-renaming) wrapper.  After renaming the AST always uses the
-    -- @XValBindsLR (NValBinds …)@ form, but we handle both for completeness.
+    -- | All top-level value bindings in the renamed group.
     topBinds :: [LHsBind GhcRn]
     topBinds = case hs_valds grp of
       ValBinds _ bs _                  -> bs
       XValBindsLR (NValBinds pairs _)  -> concatMap snd pairs
+
+    -- | Extract the variable-pattern binder name from a /top-level/ pattern,
+    -- returning 'Nothing' for wildcards, constructor patterns, and any other
+    -- form that does not introduce a plain variable binder.
+    topLevelVarPat :: LPat GhcRn -> Maybe Name
+    topLevelVarPat lp = case unLoc lp of
+      VarPat _ (L _ n) -> Just n
+      _                -> Nothing
 
 -- | Tells if a case alternative calls to patError
 isPatErrorAlt :: CoreAlt -> Bool

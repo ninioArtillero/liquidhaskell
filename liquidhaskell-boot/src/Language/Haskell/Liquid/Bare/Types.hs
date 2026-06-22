@@ -100,23 +100,31 @@ data LocalVars = LocalVars
   , lvNames :: NameEnv LocalVarDetails
   }
 
+-- | Per-binding details used by the name-resolution and sort-checking passes.
 data LocalVarDetails = LocalVarDetails
-  { lvdSourcePos    :: F.SourcePos
-  , lvdVar          :: Ghc.Var
-  , lvdLclEnv       :: [Ghc.Var]
+  { lvdSourcePos :: F.SourcePos
+  , lvdVar       :: Ghc.Var
+  , lvdLclEnv    :: [Ghc.Var]
     -- ^ Core binders in scope at the definition site of this variable.
-  , lvdIsTopLevel   :: Bool
+  , lvdIsTopLevel :: Bool
     -- ^ Is the variable defined at the top-level?
-  , lvdIsRec        :: Bool
+  , lvdIsRec     :: Bool
     -- ^ Is the variable defined in a letrec?
-  , lvdExtraSymbols :: [F.Symbol]
-    -- ^ Additional symbols from the renamed source (e.g. equation binders of the
-    --   enclosing top-level function that were substituted away during desugaring)
-    --   that should be considered in scope when resolving local specs of this
-    --   variable.  Empty for top-level bindings and for local bindings whose
-    --   enclosing function's equations all use the same binder name at every
-    --   argument position.
-  } deriving Show
+  , lvdExtraVars :: M.HashMap F.Symbol Ghc.Var
+    -- ^ Maps source-binder symbols (e.g. @n@, @ms@) to the Core 'Ghc.Var' they
+    --   correspond to when that source name was substituted away during GHC's
+    --   pattern-match desugaring.  Non-empty only for local (where- or
+    --   let-bound) helpers whose enclosing top-level function has at least one
+    --   equation whose first-argument position uses a wildcard or constructor
+    --   pattern rather than a plain variable pattern.  Used by:
+    --
+    --   * 'resolveLogicNames' (name resolution) – the keys extend the set of
+    --     locally-scoped symbols, allowing specs to reference e.g. @n@.
+    --
+    --   * 'checkTySigs' (sort checking) – the key\/value pairs are inserted
+    --     into the sort environment so that sort inference succeeds for those
+    --     symbols.
+  }
 
 -------------------------------------------------------------------------------
 -- | A @TyThingMap@ is used to resolve symbols into GHC @TyThing@ and,

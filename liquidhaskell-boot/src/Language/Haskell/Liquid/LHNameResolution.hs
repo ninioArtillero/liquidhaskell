@@ -89,7 +89,7 @@ import qualified GHC.Types.Name.Occurrence
 
 import           Language.Fixpoint.Types as F hiding (Error, panic)
 import qualified Language.Haskell.Liquid.Bare.Resolve as Resolve
-import           Language.Haskell.Liquid.Bare.Types (LocalVars(lvNames), LocalVarDetails(lvdLclEnv, lvdExtraSymbols))
+import           Language.Haskell.Liquid.Bare.Types (LocalVars(lvNames), LocalVarDetails(lvdLclEnv, lvdExtraVars))
 import           Language.Fixpoint.Misc as Misc
 import           Language.Haskell.Liquid.Name.LogicNameEnv
 import qualified Language.Haskell.Liquid.Types.DataDecl as DataDecl
@@ -843,28 +843,109 @@ resolveLogicNames cfg thisModule env globalRdrEnv lmap0 localVars lnameEnv priva
     -- Instance measures must be defined for names of class measures.
     -- The names of class measures should be in @env@
     imeasures <- mapM (mapMeasureNamesM resolveIMeasLogicName) (imeasures sp)
+    -- Before name resolution, substitute source-level binder names from
+    -- later equations (which were desugared away in Core) with the
+    -- corresponding Core binder symbols. This ensures that references such
+    -- as @n@ in a local spec are replaced with the Core lambda-binder
+    -- symbol (e.g. @ds_abc@) that actually appears in the constraint
+    -- context, preventing free-variable errors during constraint generation.
+    -- See [NOTE:MULTI-EQ-BINDERS].
+    let sp' = substAliasedBinders localVars sp {imeasures}
     emapSpecM
       (bscope cfg)
       (lenv . (GHC.lookupNameEnv (lvNames localVars) <=< getLHGHCName))
       resolveLogicName
       (emapBareTypeVM (bscope cfg) resolveLogicName)
-      sp {imeasures}
+      sp'
   where
     resolveIMeasLogicName lx =
       case val lx of
         LHNUnresolved LHLogicName s -> (<$ lx) <$> resolveLogicName [] (s <$ lx)
         _ -> panic (Just $ LH.fSrcSpan lx) $ "unexpected name: " ++ show lx
 
+    -- | [NOTE:MULTI-EQ-BINDERS]
+    -- Substitute source-level binder names that were desugared away in Core
+    -- (stored in 'lvdExtraVars') with the corresponding Core lambda-binder
+    -- symbols in the type-signature refinements.
+    --
+    -- When a multi-equation function uses a wildcard pattern (@_@) in its
+    -- first equation, GHC's desugaring picks a fresh name (e.g. @ds_abc@)
+    -- for the generated lambda binder, and the named pattern from a later
+    -- equation (e.g. @n@) is never used as a binder in Core. As a result,
+    -- local specs that mention @n@ would produce free variables in
+    -- constraints, because @n@ is not bound in the constraint context.
+    --
+    -- This pass rewrites every occurrence of such a source symbol to the
+    -- Core binder symbol @before@ name resolution so that the resolved name
+    -- refers to a variable that is actually in scope in the constraints.
+    substAliasedBinders :: LocalVars -> BareSpecParsed -> BareSpecParsed
+    substAliasedBinders lv spec = spec { sigs = map applyToSig (sigs spec) }
+      where
+        applyToSig p@(locBinder, locType) =
+          case mkSubstMap (val locBinder) of
+            Nothing      -> p
+            Just substMap ->
+              -- Apply the substitution to /both/ the refinements (via 'mapReft')
+              -- and the expression arguments in the type (via 'mapRTypeV').
+              -- Both positions can carry source-level binder names, e.g. @n@ in
+              -- @[Bounded n]@ appears as an 'RExprArg' before alias expansion,
+              -- and also inside refinements @{v | v < n}@ after expansion.
+              let substType = mapRTypeV (substLocSym substMap)
+                            . mapReft  (substInUReft substMap)
+              in (locBinder, fmap substType locType)
+
+        -- | Build a symbol-level renaming map for a given binder, mapping
+        -- each source-level alias symbol to its corresponding Core binder
+        -- symbol.  Returns 'Nothing' when no substitution is needed.
+        mkSubstMap :: LHName -> Maybe (HM.HashMap F.Symbol F.Symbol)
+        mkSubstMap lhname = do
+          ghcName <- getLHGHCName lhname
+          lvd     <- GHC.lookupNameEnv (lvNames lv) ghcName
+          let extras = lvdExtraVars lvd
+          if HM.null extras
+            then Nothing
+            else Just $ HM.fromList
+                   [ (sym, varToSymbol coreVar)
+                   | (sym, coreVar) <- HM.toList extras
+                   ]
+
+        -- | Apply a symbol renaming to the refinement part of a 'UReftBV'.
+        -- Only the reft expression is touched; abstract-refinement predicates
+        -- are left unchanged because the aliased variables do not appear
+        -- as abstract-refinement arguments in practice.
+        substInUReft
+          :: HM.HashMap F.Symbol F.Symbol
+          -> UReftBV F.Symbol F.LocSymbol
+          -> UReftBV F.Symbol F.LocSymbol
+        substInUReft substMap (MkUReft (Reft (v, e)) p) =
+          MkUReft (Reft (v, fmap (substLocSym substMap) e)) p
+
+        substLocSym :: HM.HashMap F.Symbol F.Symbol -> F.LocSymbol -> F.LocSymbol
+        substLocSym substMap ls =
+          case HM.lookup (val ls) substMap of
+            Nothing  -> ls
+            Just sym -> sym <$ ls
+
+        varToSymbol = F.symbol . GHC.getName
+
     -- | Build the set of locally-scoped symbols for a given 'LocalVarDetails'.
-    -- This includes both the Core binders in scope at the definition site and
-    -- any extra binder names from the renamed source (e.g. argument variables
-    -- from equations other than the first that were desugared away in Core).
+    -- This includes the Core binders in scope at the definition site and the
+    -- keys of 'lvdExtraVars' (source-level binder names from equations other
+    -- than the first that were desugared away in Core).
     lenv :: Maybe LocalVarDetails -> [Symbol]
     lenv Nothing    = []
     lenv (Just lvd) =
-      map localVarToSymbol (lvdLclEnv lvd) ++ lvdExtraSymbols lvd
+      map localVarToSymbol (lvdLclEnv lvd) ++ HM.keys (lvdExtraVars lvd)
 
-    localVarToSymbol = F.symbol . GHC.occNameString . GHC.nameOccName . GHC.varName
+    -- | Convert a Core 'Var' to the 'Symbol' used in the scope environment.
+    -- We use the qualified name of the underlying 'Name' (via the 'Symbolic
+    -- 'Name' instance) rather than the full 'Symbolic Var' instance: the
+    -- latter appends a unique suffix to user-defined locals (e.g. @arg0@
+    -- becomes @arg0##kZZZ@), which would not match the bare symbol @arg0@
+    -- that the user writes in spec annotations.  Using 'getName' avoids the
+    -- suffix for user-defined names while still producing the correct
+    -- @occName_unique@ form for compiler-generated names (e.g. @ds_kXn@).
+    localVarToSymbol = F.symbol . GHC.getName
 
     resolveLogicName :: [Symbol] -> LocSymbol -> State RenameOutput LHName
     resolveLogicName ss ls

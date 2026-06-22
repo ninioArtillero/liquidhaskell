@@ -55,9 +55,9 @@ import           Language.Haskell.Liquid.WiredIn
 
 import qualified Language.Haskell.Liquid.Measure           as Ms
 import qualified Language.Haskell.Liquid.Bare.Types        as Bare
+import           Language.Haskell.Liquid.Bare.Types        (LocalVars (..), LocalVarDetails (..))
 import qualified Language.Haskell.Liquid.Bare.Resolve      as Bare
 import           Language.Haskell.Liquid.UX.Config
--- import Language.Fixpoint.Types.Config (ElabFlags (ElabFlags))
 
 ----------------------------------------------------------------------------------------------
 -- | Checking TargetSrc ------------------------------------------------------------------------
@@ -214,13 +214,20 @@ checkDisjoint s1 s2 = checkUnique "disjoint" (S.toList s1 ++ S.toList s2)
 -- | Checking TargetSpec
 ----------------------------------------------------------------------------------------------
 
+-- | Check sort and well-formedness of type signatures in a 'TargetSpec'.
+--
+-- @localVars@ is needed to augment the per-binding sort environment with the
+-- source-level binder aliases stored in 'lvdExtraVars', so that local specs
+-- that reference binders from later equations (see issue #2704) pass sort
+-- checking.
 checkTargetSpec :: [Ms.BareSpec]
                 -> TargetSrc
                 -> F.SEnv F.SortedReft
                 -> [CoreBind]
+                -> LocalVars
                 -> TargetSpec
                 -> Either Diagnostics ()
-checkTargetSpec specs src env cbs tsp
+checkTargetSpec specs src env cbs localVars tsp
   | diagnostics == emptyDiagnostics = Right ()
   | otherwise                       = Left diagnostics
   where
@@ -230,7 +237,7 @@ checkTargetSpec specs src env cbs tsp
                         (runReader (foldMapM (checkBind bsc "constructor"  emb tcEnv env) (txCtors $ gsCtors      (gsData tsp))) ef)
                      <> runReader (foldMapM (checkBind bsc "assume"       emb tcEnv env) (gsAsmSigs    (gsSig tsp))) ef
                      <> runReader (foldMapM (checkBind bsc "reflect"      emb tcEnv env . (\sig@(_,s) -> F.notracepp (show (ty_info (toRTypeRep (F.val s)))) sig)) (gsRefSigs (gsSig tsp))) ef
-                     <> runReader (checkTySigs bsc cbs            emb tcEnv env                (gsSig tsp)) ef
+                     <> runReader (checkTySigs bsc cbs emb tcEnv env localVars (gsSig tsp)) ef
                      -- ++ mapMaybe (checkTerminationExpr             emb       env) (gsTexprs     (gsSig  sp))
                      <> runReader (foldMapM (checkBind bsc "class method" emb tcEnv env) (clsSigs      (gsSig tsp))) ef
                      <> runReader (foldMapM (checkInv bsc emb tcEnv env)                 (gsInvariants (gsData tsp))) ef
@@ -318,15 +325,24 @@ checkPlugged xs = mkDiagnostics mempty (map mkError (filter (hasHoleTy . val . s
 
 
 --------------------------------------------------------------------------------
+-- | Check type signatures: top-level specs are checked in the global sort
+-- environment @senv@; local (where- or let-bound) specs are checked in a
+-- per-binder environment grown by a 'CoreVisitor' walk.
+--
+-- @localVars@ is used inside 'checkVisitor' to augment the per-binder sort
+-- environment with the source-level binder aliases stored in 'lvdExtraVars',
+-- so that local specs that reference binders from later equations (issue #2704)
+-- pass sort checking even when those names were desugared away in Core.
 checkTySigs :: BScope
             -> [CoreBind]
             -> F.TCEmb TyCon
             -> Bare.TyConMap
             -> F.SEnv F.SortedReft
+            -> LocalVars
             -> GhcSpecSig
             -> ElabM Diagnostics
 --------------------------------------------------------------------------------
-checkTySigs bsc cbs emb tcEnv senv sig =
+checkTySigs bsc cbs emb tcEnv senv localVars sig =
   do ef <- ask
      pure $ mconcat (runReader (traverse (check senv) topTs) ef)
                    -- = concatMap (check env) topTs
@@ -345,9 +361,25 @@ checkTySigs bsc cbs emb tcEnv senv sig =
     checkVisitor  :: FC.ElabFlags -> CoreVisitor (F.SEnv F.SortedReft) Diagnostics
     checkVisitor ef = CoreVisitor
                        { envF  = \env v     -> F.insertSEnv (F.symbol v) (vSort v) env
-                       , bindF = \env acc v -> runReader (errs env v) ef <> acc
+                       , bindF = \env acc v -> runReader (errs (extendEnv v env) v) ef <> acc
                        , exprF = \_   acc _ -> acc
                        }
+
+    -- | Extend the sort environment @env@ with the source-binder aliases for
+    -- @v@, if any.  Each entry @(sym, coreVar)@ in @lvdExtraVars@ contributes
+    -- @(sym, vSort coreVar)@ to the environment, so that sort checking of a
+    -- local spec can resolve e.g. @n@ when the corresponding Core binder has a
+    -- generated name like @ds_0@.
+    extendEnv :: Var -> F.SEnv F.SortedReft -> F.SEnv F.SortedReft
+    extendEnv v env =
+      case Ghc.lookupNameEnv (lvNames localVars) (Ghc.getName v) of
+        Nothing  -> env
+        Just lvd ->
+          M.foldrWithKey
+            (\sym coreVar e -> F.insertSEnv sym (vSort coreVar) e)
+            env
+            (lvdExtraVars lvd)
+
     vSort            = Bare.varSortedReft emb
     errs :: F.SEnv F.SortedReft -> Var -> ElabM Diagnostics
     errs env v       = case M.lookup v locTm of

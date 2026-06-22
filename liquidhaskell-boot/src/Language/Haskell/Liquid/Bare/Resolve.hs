@@ -55,11 +55,13 @@ import qualified Control.Exception                 as Ex
 import           Data.Bifunctor (first)
 import           Data.Function (on)
 import           Data.IORef (newIORef)
+import qualified Data.IntMap.Strict                as IntMap
 import qualified Data.List                         as L
 import qualified Data.Map.Strict                   as Map
 import qualified Data.HashSet                      as S
 import qualified Data.Maybe                        as Mb
 import qualified Data.HashMap.Strict               as M
+import qualified Data.Set                          as Set
 import           GHC.Stack
 import qualified Text.PrettyPrint.HughesPJ         as PJ
 
@@ -124,69 +126,110 @@ getGlobalSyms (_, spec)
 --
 -- When the renamed source is available (it is not in Haddock mode), we
 -- extract the argument-pattern binder names from every equation of every
--- top-level function and store them in 'lvdExtraSymbols'.  This allows
--- local specs to refer to binders that appear only in later equations
--- of a multi-equation definition and have therefore been substituted
--- away during GHC's pattern-match desugaring.
+-- top-level function, tagged by argument position, and store the resulting
+-- source-name → Core-'Var' map in 'lvdExtraVars'.  This allows local specs
+-- to refer to binders that appear only in later equations of a multi-equation
+-- definition and have therefore been substituted away in GHC's Core output.
 makeLocalVars :: Maybe (Ghc.HsGroup Ghc.GhcRn) -> [Ghc.CoreBind] -> LocalVars
-makeLocalVars mRnGroup = localVarMap . localBinds extraSymsMap
+makeLocalVars mRnGroup = localVarMap . localBinds extraPositionalMap
   where
-    -- | Map from each top-level function's 'Name' to the deduplicated list
-    -- of variable-pattern binder symbols from all its equations.
-    extraSymsMap :: Map.Map Ghc.Name [F.Symbol]
-    extraSymsMap = case mRnGroup of
+    -- | Map from each top-level function's 'Name' to the positional binder
+    -- information: argument index → set of VarPat binder Names from all
+    -- equations at that position.
+    extraPositionalMap :: Map.Map Ghc.Name (IntMap.IntMap (Set.Set Ghc.Name))
+    extraPositionalMap = case mRnGroup of
       Nothing  -> Map.empty
-      Just grp -> Map.map toSymbols (Ghc.collectFunBindPatNames grp)
-
-    -- | Convert a list of renamed 'Name's to fixpoint 'Symbol's,
-    -- removing duplicates that arise when the same binder name is used in
-    -- multiple equations (e.g. @step n ms = ...@ and @step n [] = []@).
-    toSymbols :: [Ghc.Name] -> [F.Symbol]
-    toSymbols = map nameToSym . L.nub
-
-    nameToSym :: Ghc.Name -> F.Symbol
-    nameToSym = F.symbol . Ghc.occNameString . Ghc.nameOccName
+      Just grp -> Ghc.collectFunBindPatNamesPositional grp
 
 -- | Traverse Core bindings and collect 'LocalVarDetails' for every binding.
 --
--- @extraSymsMap@ maps each top-level function's 'Name' to the extra binder
--- symbols (from all its source equations) that should be visible to specs of
--- local bindings inside that function's body.
-localBinds :: Map.Map Ghc.Name [F.Symbol] -> [Ghc.CoreBind] -> [LocalVarDetails]
-localBinds extraSymsMap                   = concatMap (bgoT [])
+-- @extraPositionalMap@ maps each top-level function's 'Name' to a positional
+-- map (argument index → set of source VarPat binder Names at that position).
+-- For each top-level binding we pair source names with the corresponding Core
+-- lambda binders and propagate the resulting 'lvdExtraVars' map down into
+-- nested let-bindings.
+localBinds
+  :: Map.Map Ghc.Name (IntMap.IntMap (Set.Set Ghc.Name))
+  -> [Ghc.CoreBind]
+  -> [LocalVarDetails]
+localBinds extraPositionalMap = concatMap (bgoT [])
   where
     bgoT g (Ghc.NonRec x e) = pgoT g False (x, e)
     bgoT g (Ghc.Rec xes)    = concatMap (pgoT g True) xes
 
-    -- | Process a top-level binding: look up its extra symbols (from all its
-    -- source equations) and use them when traversing the binding's body.
+    -- | Process a top-level binding: build the extra-vars map by pairing the
+    -- source-level positional binder names with the actual Core lambda binders
+    -- of the definition's body, then propagate it into nested bindings.
     pgoT g isRec (x, e) =
-      let es = Map.findWithDefault [] (Ghc.varName x) extraSymsMap
-      in mkLVD [] g True isRec x : goWith es g e
+      let posMap   = Map.findWithDefault IntMap.empty (Ghc.varName x) extraPositionalMap
+          lambdas  = collectTopLambdas e
+          extraVars = buildExtraVarMap posMap lambdas
+      in mkLVD M.empty g True isRec x : goWith extraVars g e
 
-    bgo es g (Ghc.NonRec x e)  = pgo es g False (x, e)
-    bgo es g (Ghc.Rec xes)     = concatMap (pgo es g True) xes
-    pgo es g isRec (x, e)      = mkLVD es g False isRec x : goWith es g e
+    bgo ev g (Ghc.NonRec x e)  = pgo ev g False (x, e)
+    bgo ev g (Ghc.Rec xes)     = concatMap (pgo ev g True) xes
+    pgo ev g isRec (x, e)      = mkLVD ev g False isRec x : goWith ev g e
 
-    goWith es g (Ghc.App e a)       = concatMap (goWith es g) [e, a]
-    goWith es g (Ghc.Lam x e)       = goWith es (x:g) e
-    goWith es g (Ghc.Let b e)       = bgo es g b ++ goWith es (Ghc.bindersOf b ++ g) e
-    goWith es g (Ghc.Tick _ e)      = goWith es g e
-    goWith es g (Ghc.Cast e _)      = goWith es g e
-    goWith es g (Ghc.Case e _ _ cs) =
-      goWith es g e ++
-      concatMap (\(Ghc.Alt _ bs e') -> goWith es (bs ++ g) e') cs
+    goWith ev g (Ghc.App e a)       = concatMap (goWith ev g) [e, a]
+    goWith ev g (Ghc.Lam x e)       = goWith ev (x:g) e
+    goWith ev g (Ghc.Let b e)       = bgo ev g b ++ goWith ev (Ghc.bindersOf b ++ g) e
+    goWith ev g (Ghc.Tick _ e)      = goWith ev g e
+    goWith ev g (Ghc.Cast e _)      = goWith ev g e
+    goWith ev g (Ghc.Case e _ _ cs) =
+      goWith ev g e ++
+      concatMap (\(Ghc.Alt _ bs e') -> goWith ev (bs ++ g) e') cs
     goWith _  _ (Ghc.Var _)         = []
     goWith _  _ _                   = []
 
-    mkLVD es g isTopLevel isRec v = LocalVarDetails
-      { lvdSourcePos    = F.sp_start $ F.srcSpan v
-      , lvdVar          = v
-      , lvdLclEnv       = g
-      , lvdIsTopLevel   = isTopLevel
-      , lvdIsRec        = isRec
-      , lvdExtraSymbols = es
+    mkLVD ev g isTopLevel isRec v = LocalVarDetails
+      { lvdSourcePos  = F.sp_start $ F.srcSpan v
+      , lvdVar        = v
+      , lvdLclEnv     = g
+      , lvdIsTopLevel = isTopLevel
+      , lvdIsRec      = isRec
+      , lvdExtraVars  = ev
       }
+
+-- | Collect the leading value-lambda binders of a Core expression, skipping
+-- any type-lambda binders that precede them.
+--
+-- The resulting list corresponds, position-for-position, to the value
+-- arguments of the function as written in the source.
+--
+-- Both type-variable binders and class-dictionary binders are skipped
+-- because neither appears as a named argument in the source; only the
+-- ordinary value parameters are of interest for binder-name alignment.
+collectTopLambdas :: Ghc.CoreExpr -> [Ghc.Var]
+collectTopLambdas (Ghc.Lam v e)
+  | Ghc.isTyVar  v = collectTopLambdas e  -- skip type-level binders
+  | Ghc.isDictId v = collectTopLambdas e  -- skip class-dictionary binders
+  | otherwise      = v : collectTopLambdas e
+collectTopLambdas _              = []
+
+-- | Build the 'lvdExtraVars' map for nested bindings of a top-level function.
+--
+-- @posMap@ maps each argument position to the set of source VarPat binder
+-- Names at that position across all equations.  @lambdas@ are the leading
+-- value-lambda binders of the function's Core body (one per argument).
+--
+-- For each @(position, srcNames)@ pair we take the Core lambda binder at that
+-- position and, for every source name whose symbol differs from that binder's
+-- symbol, add @(srcSymbol, coreVar)@ to the result.  Pairs where the symbols
+-- match are omitted because the Core name is already visible via 'lvdLclEnv'.
+buildExtraVarMap
+  :: IntMap.IntMap (Set.Set Ghc.Name)
+  -> [Ghc.Var]
+  -> M.HashMap F.Symbol Ghc.Var
+buildExtraVarMap posMap lambdas = M.fromList
+  [ (symSrc, coreVar)
+  | (pos, srcNames) <- IntMap.toList posMap
+  , pos < length lambdas
+  , let coreVar = lambdas !! pos
+        symCore = F.symbol $ Ghc.getName coreVar
+  , srcName     <- Set.toList srcNames
+  , let symSrc  = F.symbol srcName
+  , symSrc /= symCore
+  ]
 
 localVarMap :: [LocalVarDetails] -> LocalVars
 localVarMap lvds =
