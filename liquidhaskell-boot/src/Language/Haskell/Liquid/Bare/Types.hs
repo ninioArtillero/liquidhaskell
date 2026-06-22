@@ -101,11 +101,21 @@ data LocalVars = LocalVars
   }
 
 data LocalVarDetails = LocalVarDetails
-  { lvdSourcePos :: F.SourcePos
-  , lvdVar :: Ghc.Var
-  , lvdLclEnv :: [Ghc.Var]
-  , lvdIsTopLevel :: Bool  -- ^ Is the variable defined at the top-level?
-  , lvdIsRec :: Bool  -- ^ Is the variable defined in a letrec?
+  { lvdSourcePos    :: F.SourcePos
+  , lvdVar          :: Ghc.Var
+  , lvdLclEnv       :: [Ghc.Var]
+    -- ^ Core binders in scope at the definition site of this variable.
+  , lvdIsTopLevel   :: Bool
+    -- ^ Is the variable defined at the top-level?
+  , lvdIsRec        :: Bool
+    -- ^ Is the variable defined in a letrec?
+  , lvdExtraSymbols :: [F.Symbol]
+    -- ^ Additional symbols from the renamed source (e.g. equation binders of the
+    --   enclosing top-level function that were substituted away during desugaring)
+    --   that should be considered in scope when resolving local specs of this
+    --   variable.  Empty for top-level bindings and for local bindings whose
+    --   enclosing function's equations all use the same binder name at every
+    --   argument position.
   } deriving Show
 
 -------------------------------------------------------------------------------
