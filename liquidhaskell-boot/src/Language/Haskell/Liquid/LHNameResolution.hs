@@ -89,7 +89,7 @@ import qualified GHC.Types.Name.Occurrence
 
 import           Language.Fixpoint.Types as F hiding (Error, panic)
 import qualified Language.Haskell.Liquid.Bare.Resolve as Resolve
-import           Language.Haskell.Liquid.Bare.Types (LocalVars(lvNames), LocalVarDetails(lvdLclEnv))
+import           Language.Haskell.Liquid.Bare.Types (LocalVars(lvNames), LocalVarDetails(lvdLclEnv, lvdExtraSymbols))
 import           Language.Fixpoint.Misc as Misc
 import           Language.Haskell.Liquid.Name.LogicNameEnv
 import qualified Language.Haskell.Liquid.Types.DataDecl as DataDecl
@@ -845,7 +845,7 @@ resolveLogicNames cfg thisModule env globalRdrEnv lmap0 localVars lnameEnv priva
     imeasures <- mapM (mapMeasureNamesM resolveIMeasLogicName) (imeasures sp)
     emapSpecM
       (bscope cfg)
-      (map localVarToSymbol . maybe [] lvdLclEnv . (GHC.lookupNameEnv (lvNames localVars) <=< getLHGHCName))
+      (lenv . (GHC.lookupNameEnv (lvNames localVars) <=< getLHGHCName))
       resolveLogicName
       (emapBareTypeVM (bscope cfg) resolveLogicName)
       sp {imeasures}
@@ -854,6 +854,15 @@ resolveLogicNames cfg thisModule env globalRdrEnv lmap0 localVars lnameEnv priva
       case val lx of
         LHNUnresolved LHLogicName s -> (<$ lx) <$> resolveLogicName [] (s <$ lx)
         _ -> panic (Just $ LH.fSrcSpan lx) $ "unexpected name: " ++ show lx
+
+    -- | Build the set of locally-scoped symbols for a given 'LocalVarDetails'.
+    -- This includes both the Core binders in scope at the definition site and
+    -- any extra binder names from the renamed source (e.g. argument variables
+    -- from equations other than the first that were desugared away in Core).
+    lenv :: Maybe LocalVarDetails -> [Symbol]
+    lenv Nothing    = []
+    lenv (Just lvd) =
+      map localVarToSymbol (lvdLclEnv lvd) ++ lvdExtraSymbols lvd
 
     localVarToSymbol = F.symbol . GHC.occNameString . GHC.nameOccName . GHC.varName
 

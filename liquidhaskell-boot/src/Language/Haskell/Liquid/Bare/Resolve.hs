@@ -56,6 +56,7 @@ import           Data.Bifunctor (first)
 import           Data.Function (on)
 import           Data.IORef (newIORef)
 import qualified Data.List                         as L
+import qualified Data.Map.Strict                   as Map
 import qualified Data.HashSet                      as S
 import qualified Data.Maybe                        as Mb
 import qualified Data.HashMap.Strict               as M
@@ -118,32 +119,73 @@ getGlobalSyms (_, spec)
   where
     mbName = lhNameToResolvedSymbol . F.val . msName
 
-makeLocalVars :: [Ghc.CoreBind] -> LocalVars
-makeLocalVars = localVarMap . localBinds
-
-localBinds :: [Ghc.CoreBind] -> [LocalVarDetails]
-localBinds                    = concatMap (bgoT [])
+-- | Build a 'LocalVars' map from a Core program, optionally enriched with
+-- binder names from the renamed source.
+--
+-- When the renamed source is available (it is not in Haddock mode), we
+-- extract the argument-pattern binder names from every equation of every
+-- top-level function and store them in 'lvdExtraSymbols'.  This allows
+-- local specs to refer to binders that appear only in later equations
+-- of a multi-equation definition and have therefore been substituted
+-- away during GHC's pattern-match desugaring.
+makeLocalVars :: Maybe (Ghc.HsGroup Ghc.GhcRn) -> [Ghc.CoreBind] -> LocalVars
+makeLocalVars mRnGroup = localVarMap . localBinds extraSymsMap
   where
-    bgoT g (Ghc.NonRec x e) = pgo g True False (x, e)
-    bgoT g (Ghc.Rec xes)    = concatMap (pgo g True True) xes
-    pgo g isTopLevel isRec (x, e) = mkLocalVarDetails g isTopLevel isRec x : go g e
-    bgo g (Ghc.NonRec x e)  = pgo g False False (x, e)
-    bgo g (Ghc.Rec xes)     = concatMap (pgo g False True) xes
-    go g (Ghc.App e a)       = concatMap (go g) [e, a]
-    go g (Ghc.Lam x e)       = go (x:g) e
-    go g (Ghc.Let b e)       = bgo g b ++ go (Ghc.bindersOf b ++ g) e
-    go g (Ghc.Tick _ e)      = go g e
-    go g (Ghc.Cast e _)      = go g e
-    go g (Ghc.Case e _ _ cs) = go g e ++ concatMap (\(Ghc.Alt _ bs e') -> go (bs ++ g) e') cs
-    go _ (Ghc.Var _)         = []
-    go _ _                   = []
+    -- | Map from each top-level function's 'Name' to the deduplicated list
+    -- of variable-pattern binder symbols from all its equations.
+    extraSymsMap :: Map.Map Ghc.Name [F.Symbol]
+    extraSymsMap = case mRnGroup of
+      Nothing  -> Map.empty
+      Just grp -> Map.map toSymbols (Ghc.collectFunBindPatNames grp)
 
-    mkLocalVarDetails g isTopLevel isRec v = LocalVarDetails
-      { lvdSourcePos = F.sp_start $ F.srcSpan v
-      , lvdVar = v
-      , lvdLclEnv = g
-      , lvdIsTopLevel = isTopLevel
-      , lvdIsRec = isRec
+    -- | Convert a list of renamed 'Name's to fixpoint 'Symbol's,
+    -- removing duplicates that arise when the same binder name is used in
+    -- multiple equations (e.g. @step n ms = ...@ and @step n [] = []@).
+    toSymbols :: [Ghc.Name] -> [F.Symbol]
+    toSymbols = map nameToSym . L.nub
+
+    nameToSym :: Ghc.Name -> F.Symbol
+    nameToSym = F.symbol . Ghc.occNameString . Ghc.nameOccName
+
+-- | Traverse Core bindings and collect 'LocalVarDetails' for every binding.
+--
+-- @extraSymsMap@ maps each top-level function's 'Name' to the extra binder
+-- symbols (from all its source equations) that should be visible to specs of
+-- local bindings inside that function's body.
+localBinds :: Map.Map Ghc.Name [F.Symbol] -> [Ghc.CoreBind] -> [LocalVarDetails]
+localBinds extraSymsMap                   = concatMap (bgoT [])
+  where
+    bgoT g (Ghc.NonRec x e) = pgoT g False (x, e)
+    bgoT g (Ghc.Rec xes)    = concatMap (pgoT g True) xes
+
+    -- | Process a top-level binding: look up its extra symbols (from all its
+    -- source equations) and use them when traversing the binding's body.
+    pgoT g isRec (x, e) =
+      let es = Map.findWithDefault [] (Ghc.varName x) extraSymsMap
+      in mkLVD [] g True isRec x : goWith es g e
+
+    bgo es g (Ghc.NonRec x e)  = pgo es g False (x, e)
+    bgo es g (Ghc.Rec xes)     = concatMap (pgo es g True) xes
+    pgo es g isRec (x, e)      = mkLVD es g False isRec x : goWith es g e
+
+    goWith es g (Ghc.App e a)       = concatMap (goWith es g) [e, a]
+    goWith es g (Ghc.Lam x e)       = goWith es (x:g) e
+    goWith es g (Ghc.Let b e)       = bgo es g b ++ goWith es (Ghc.bindersOf b ++ g) e
+    goWith es g (Ghc.Tick _ e)      = goWith es g e
+    goWith es g (Ghc.Cast e _)      = goWith es g e
+    goWith es g (Ghc.Case e _ _ cs) =
+      goWith es g e ++
+      concatMap (\(Ghc.Alt _ bs e') -> goWith es (bs ++ g) e') cs
+    goWith _  _ (Ghc.Var _)         = []
+    goWith _  _ _                   = []
+
+    mkLVD es g isTopLevel isRec v = LocalVarDetails
+      { lvdSourcePos    = F.sp_start $ F.srcSpan v
+      , lvdVar          = v
+      , lvdLclEnv       = g
+      , lvdIsTopLevel   = isTopLevel
+      , lvdIsRec        = isRec
+      , lvdExtraSymbols = es
       }
 
 localVarMap :: [LocalVarDetails] -> LocalVars

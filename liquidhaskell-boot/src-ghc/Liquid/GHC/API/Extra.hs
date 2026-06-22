@@ -24,6 +24,7 @@ module Liquid.GHC.API.Extra (
   , thisPackage
   , tyConRealArity
   , untick
+  , collectFunBindPatNames
   , withTimingWallClock
   ) where
 
@@ -188,6 +189,41 @@ addNoInlinePragmasToBinds tcg = tcg{ tcg_binds = go (tcg_binds tcg) }
                        , abe_mono = mono } = abe
           { abe_poly = markId poly
           , abe_mono = markId mono }
+
+-- | Collect all variable-pattern binder 'Name's from all equations of every
+-- top-level 'FunBind' in the renamed source group.
+--
+-- Returns a map from each top-level function's 'Name' to the list of 'Name's
+-- that appear as 'VarPat' binders across /all/ equations of that function.
+-- The list preserves duplicates (the same name may occur in multiple equations)
+-- so callers can deduplicate as required.
+--
+-- This is used by the LiquidHaskell plugin to populate 'lvdExtraSymbols',
+-- ensuring that local specs written in a later equation of a multi-equation
+-- top-level function can refer to binders that are missing from the /first/
+-- equation (e.g. because that equation uses a wildcard @_@).  Without this
+-- information, GHC's desugaring drops those binder names entirely from the
+-- Core representation, making them invisible to the normal name-resolution
+-- logic that only inspects Core binders.
+--
+-- See https://github.com/ucsd-progsys/liquidhaskell/issues/2704
+collectFunBindPatNames :: HsGroup GhcRn -> Map.Map Name [Name]
+collectFunBindPatNames grp =
+    Map.fromListWith (++)
+      [ (fname, collectPatsBinders CollNoDictBinders (hsLMatchPats lmatch))
+      | L _ bind  <- topBinds
+      , FunBind { fun_id = L _ fname, fun_matches = mg } <- [bind]
+      , lmatch <- unLoc (mg_alts mg)
+      ]
+  where
+    -- | All top-level value bindings in the renamed group, regardless of
+    -- whether they come from a @ValBinds@ (pre-renaming) or @XValBindsLR@
+    -- (post-renaming) wrapper.  After renaming the AST always uses the
+    -- @XValBindsLR (NValBinds …)@ form, but we handle both for completeness.
+    topBinds :: [LHsBind GhcRn]
+    topBinds = case hs_valds grp of
+      ValBinds _ bs _                  -> bs
+      XValBindsLR (NValBinds pairs _)  -> concatMap snd pairs
 
 -- | Tells if a case alternative calls to patError
 isPatErrorAlt :: CoreAlt -> Bool

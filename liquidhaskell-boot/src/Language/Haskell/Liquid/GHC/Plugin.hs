@@ -592,7 +592,7 @@ processModule LiquidHaskellContext{..} = do
     -- Due to the fact the internals can throw exceptions from pure code at any point, we need to
     -- call 'evaluate' to force any exception and catch it, if we can.
 
-    let localVars = Resolve.makeLocalVars preNormalizedCore
+    let localVars = Resolve.makeLocalVars (GHC.tcg_rn_decls tcg) preNormalizedCore
         eBareSpec = resolveLHNames
           moduleCfg
           thisModule
